@@ -12,6 +12,7 @@ import {
 	TextInput,
 } from "@mantine/core";
 import {
+	ArrowClockwiseIcon,
 	ArrowsInSimpleIcon,
 	ArrowsOutSimpleIcon,
 	BooksIcon,
@@ -25,6 +26,8 @@ import {
 	FolderSimpleIcon,
 	LockSimpleIcon,
 	MagnifyingGlassIcon,
+	PauseIcon,
+	PlayIcon,
 	TreeStructureIcon,
 	VideoCameraIcon,
 	WarningCircleIcon,
@@ -43,15 +46,21 @@ import { adminClient, bytes, date } from "./api";
 import { useAdmin } from "./context";
 import { EmptyState, StatusBadge } from "./shared";
 
-export type StructureFilter = "all" | "downloaded" | "remaining" | "attention";
+export type StructureFilter = "active" | "downloaded" | "remaining";
+
+export const activeDownloadStates = [
+	"planning",
+	"queued",
+	"running",
+	"downloading",
+	"paused",
+];
 
 function itemMatchesFilter(item: ItemDownloadStatus, filter: StructureFilter) {
-	if (filter === "all") return true;
 	if (!item.downloadable) return false;
 	if (filter === "downloaded") return item.state === "downloaded";
 	if (filter === "remaining") return item.state !== "downloaded";
-	if (filter === "attention")
-		return ["downloading", "queued", "partial", "failed"].includes(item.state);
+	if (filter === "active") return activeDownloadStates.includes(item.state);
 	return true;
 }
 
@@ -83,7 +92,7 @@ function assetLabel(asset: AssetDownloadStatus) {
 
 export function CourseStructureTree({
 	courses,
-	filter = "all",
+	filter = "remaining",
 	query = "",
 	defaultExpandedCourses = false,
 	onInspectCourse,
@@ -127,14 +136,13 @@ export function CourseStructureTree({
 						`${course.name} ${course.slug}`
 							.toLowerCase()
 							.includes(normalizedQuery)) &&
-					(filter === "all" ||
-						(filter === "downloaded" &&
-							course.totalItems > 0 &&
-							course.downloadedItems === course.totalItems) ||
+					((filter === "downloaded" &&
+						course.totalItems > 0 &&
+						course.downloadedItems === course.totalItems) ||
 						(filter === "remaining" &&
 							(course.remainingItems > 0 || course.totalItems === 0)) ||
-						(filter === "attention" &&
-							["downloading", "partial", "failed"].includes(course.state)));
+						(filter === "active" &&
+							activeDownloadStates.includes(course.state)));
 
 				return {
 					course,
@@ -149,7 +157,7 @@ export function CourseStructureTree({
 		const key = String(id);
 		if (key in openCourses) return openCourses[key];
 		if (expandAll !== null) return expandAll;
-		if (normalizedQuery || filter !== "all") return true;
+		if (normalizedQuery) return true;
 		return defaultExpandedCourses || courses.length === 1 || index === 0;
 	};
 
@@ -157,7 +165,7 @@ export function CourseStructureTree({
 		const key = String(id);
 		if (key in openModules) return openModules[key];
 		if (expandAll !== null) return expandAll;
-		if (normalizedQuery || filter !== "all") return true;
+		if (normalizedQuery) return true;
 		return courses.length === 1 && index === 0;
 	};
 
@@ -165,7 +173,7 @@ export function CourseStructureTree({
 		const key = String(id);
 		if (key in openLessons) return openLessons[key];
 		if (expandAll !== null) return expandAll;
-		if (normalizedQuery || filter !== "all") return true;
+		if (normalizedQuery) return true;
 		return courses.length === 1 && index === 0;
 	};
 
@@ -300,31 +308,30 @@ export function CourseStructureTree({
 										</ActionIcon>
 									)}
 									{(course.remainingItems > 0 ||
-										course.outlineState !== "ready") &&
-										course.state !== "downloading" && (
-											<Button
-												size="xs"
-												variant="light"
-												loading={busyCourseId === course.courseId}
-												leftSection={<DownloadSimpleIcon size={14} />}
-												onClick={async () => {
-													setBusyCourseId(course.courseId);
-													await run(
-														() =>
-															adminClient.startDownload({
-																target: {
-																	case: "courseId",
-																	value: course.courseId,
-																},
-															}),
-														"Download queued.",
-													);
-													setBusyCourseId(null);
-												}}
-											>
-												Download
-											</Button>
-										)}
+										course.outlineState !== "ready") && (
+										<Button
+											size="xs"
+											variant="light"
+											loading={busyCourseId === course.courseId}
+											leftSection={<DownloadSimpleIcon size={14} />}
+											onClick={async () => {
+												setBusyCourseId(course.courseId);
+												await run(
+													() =>
+														adminClient.startDownload({
+															target: {
+																case: "courseId",
+																value: course.courseId,
+															},
+														}),
+													"Download queued.",
+												);
+												setBusyCourseId(null);
+											}}
+										>
+											Download
+										</Button>
+									)}
 								</div>
 							</div>
 
@@ -587,7 +594,15 @@ export function DownloadStructureModal({
 	courses: CourseDownloadStatus[];
 	close: () => void;
 }) {
-	const [filter, setFilter] = useState<StructureFilter>("all");
+	const [filter, setFilter] = useState<StructureFilter>(() =>
+		courses.some((course) => activeDownloadStates.includes(course.state))
+			? "active"
+			: courses.some(
+						(course) => course.remainingItems > 0 || course.totalItems === 0,
+					)
+				? "remaining"
+				: "downloaded",
+	);
 	const [query, setQuery] = useState("");
 
 	const totals = useMemo(() => {
@@ -678,16 +693,15 @@ export function DownloadStructureModal({
 						value={filter}
 						onChange={(v) => setFilter(v as StructureFilter)}
 						data={[
-							{ value: "all", label: `All (${totals.totalItems})` },
+							{ value: "active", label: "Active" },
 							{
 								value: "downloaded",
 								label: `Downloaded (${totals.downloadedItems})`,
 							},
 							{
 								value: "remaining",
-								label: `Remaining (${totals.remainingItems})`,
+								label: `Not downloaded (${totals.remainingItems})`,
 							},
-							{ value: "attention", label: "Active / Failed" },
 						]}
 					/>
 				</Group>
@@ -718,6 +732,31 @@ export function DownloadList({
 	const [cancelling, setCancelling] = useState<DownloadJob | null>(null);
 	const [inspecting, setInspecting] = useState<DownloadJob | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [actionJob, setActionJob] = useState<bigint | null>(null);
+
+	const controlJob = async (
+		job: DownloadJob,
+		action: "pause" | "resume" | "retry",
+	) => {
+		setActionJob(job.id);
+		try {
+			await run(
+				() =>
+					action === "pause"
+						? adminClient.pauseDownload({ id: job.id })
+						: action === "resume"
+							? adminClient.resumeDownload({ id: job.id })
+							: adminClient.retryDownload({ id: job.id }),
+				action === "pause"
+					? "Download paused."
+					: action === "resume"
+						? "Download resumed."
+						: "Failed downloads queued for retry.",
+			);
+		} finally {
+			setActionJob(null);
+		}
+	};
 
 	const openInspect = (job: DownloadJob) => {
 		if (onInspectJob) onInspectJob(job);
@@ -774,6 +813,50 @@ export function DownloadList({
 											>
 												Structure
 											</Button>
+											{[
+												"queued",
+												"planning",
+												"running",
+												"paused",
+												"failed",
+												"partial_failure",
+											].includes(job.state) && (
+												<Button
+													size="compact-xs"
+													variant="light"
+													loading={actionJob === job.id}
+													disabled={actionJob !== null && actionJob !== job.id}
+													leftSection={
+														job.state === "paused" ? (
+															<PlayIcon size={13} />
+														) : ["failed", "partial_failure"].includes(
+																job.state,
+															) ? (
+															<ArrowClockwiseIcon size={13} />
+														) : (
+															<PauseIcon size={13} />
+														)
+													}
+													onClick={() =>
+														void controlJob(
+															job,
+															job.state === "paused"
+																? "resume"
+																: ["failed", "partial_failure"].includes(
+																			job.state,
+																		)
+																	? "retry"
+																	: "pause",
+														)
+													}
+												>
+													{job.state === "paused"
+														? "Resume"
+														: ["failed", "partial_failure"].includes(job.state)
+															? "Retry failed"
+															: "Pause"}
+												</Button>
+											)}
 											{!compact &&
 												[
 													"queued",

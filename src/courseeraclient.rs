@@ -76,7 +76,13 @@ impl CourseEraClient {
             .map_err(|_| "Coursera returned an invalid response. Check cookie.txt.".into())
     }
 
-    pub async fn asset_response(&self, source: &str) -> Result<reqwest::Response, String> {
+    /// Fetch a course file. When `offset` is non-zero a `Range` request is sent so a
+    /// partial download can continue; callers must check for `206 Partial Content`.
+    pub async fn asset_response(
+        &self,
+        source: &str,
+        offset: u64,
+    ) -> Result<reqwest::Response, String> {
         let url = reqwest::Url::parse(&self.base_url)
             .map_err(|_| "Invalid provider URL")?
             .join(source)
@@ -91,8 +97,11 @@ impl CourseEraClient {
         } else {
             self.asset_client.clone()
         };
-        let response = client
-            .get(url)
+        let mut request = client.get(url);
+        if offset > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+        }
+        let response = request
             .send()
             .await
             .map_err(|_| "Could not fetch the course file".to_string())?;

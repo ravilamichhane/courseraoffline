@@ -1,11 +1,13 @@
 //! Persistent background download queue. One job plans at a time; file transfers
 //! within that job run concurrently up to its saved configuration limit.
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use futures_util::{StreamExt, stream};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -32,12 +34,17 @@ pub struct Settings {
 struct Selection {
     course_ids: Vec<i64>,
     settings: Settings,
+    /// Items already downloaded or reserved by another job when this was queued.
+    #[serde(default)]
+    skip_item_ids: Vec<i64>,
 }
 
 pub struct Downloads {
     pool: DbPool,
     pub client: Arc<CourseEraClient>,
     pub downloads_dir: PathBuf,
+    /// Serialises control actions with acknowledgement from the current worker.
+    execution: std::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +81,17 @@ impl Downloads {
             pool,
             client,
             downloads_dir,
+            execution: std::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    fn execution_lock(&self, id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        self.execution
+            .lock()
+            .unwrap()
+            .entry(id)
+            .or_default()
+            .clone()
     }
 
     pub(crate) async fn db<T: Send + 'static>(
@@ -100,19 +117,23 @@ impl Downloads {
             loop {
                 match worker.claim().await {
                     Ok(Some((id, selection))) => {
+                        let execution = worker.execution_lock(id);
+                        let _execution = execution.lock().await;
                         let result = tokio::select! {
                             result=worker.process(id,selection)=>result,
-                            _=worker.wait_for_cancellation(id)=>Ok(()),
+                            _=worker.wait_for_stop(id)=>Ok(()),
                         };
                         if let Err(error) = result {
                             let _=worker.db(move |c| {
-                                c.execute("UPDATE download_jobs SET state='failed',last_error=?1,finished_at=unixepoch()*1000,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?2 AND state!='cancelled'",params![error,id]).map_err(|e|e.to_string())?;
-                                c.execute("UPDATE download_tasks SET state='failed',last_error_message=?1,updated_at=unixepoch()*1000 WHERE job_id=?2 AND state IN ('queued','running')",params![error,id]).map_err(|e|e.to_string())?;
+                                c.execute("UPDATE download_jobs SET state='failed',last_error=?1,finished_at=unixepoch()*1000,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?2 AND state NOT IN ('cancelled','paused')",params![error,id]).map_err(|e|e.to_string())?;
+                                c.execute("UPDATE download_tasks SET state='failed',last_error_message=?1,updated_at=unixepoch()*1000 WHERE job_id=?2 AND state IN ('queued','running') AND (SELECT state FROM download_jobs WHERE id=?2)='failed'",params![error,id]).map_err(|e|e.to_string())?;
                                 Ok(())
                             }).await;
                         }
                     }
-                    Ok(None) => tokio::time::sleep(Duration::from_millis(750)).await,
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_millis(750)).await;
+                    }
                     Err(error) => {
                         eprintln!("Download queue: {error}");
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -128,27 +149,31 @@ impl Downloads {
         course_id: Option<i64>,
         specialization_id: Option<i64>,
     ) -> Result<i64, String> {
+        let downloads_dir = self.downloads_dir.clone();
         self.db(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
             let course_ids=if let Some(id)=course_id {
                 let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM courses WHERE id=? AND archived_at IS NULL)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if !exists { return Err("Course not found or archived.".into()); }
-                let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM download_jobs j WHERE j.state IN ('planning','queued','running','paused') AND j.course_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
-                if overlap { return Err("A download for this course is already active.".into()); }
                 vec![id]
             } else if let Some(id)=specialization_id {
                 let mut stmt=tx.prepare("SELECT sc.course_id FROM specialization_courses sc JOIN courses c ON c.id=sc.course_id WHERE sc.specialization_id=? AND c.archived_at IS NULL ORDER BY sc.position").map_err(|e|e.to_string())?;
                 let ids=stmt.query_map([id],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;
                 if ids.is_empty() { return Err("This specialisation has no active courses.".into()); }
-                let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM download_jobs j WHERE j.state IN ('planning','queued','running','paused') AND j.specialization_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
-                if overlap { return Err("A download for this specialisation is already active.".into()); }
                 ids
             } else { return Err("Choose a course or specialisation.".into()); };
             let settings=tx.query_row("SELECT preferred_video_height,preferred_video_format,quality_fallback_policy,subtitle_languages_json,download_subtitles,download_supplements,max_concurrent_downloads FROM application_settings WHERE id=1",[],|r| {
                 let languages:String=r.get(3)?;
                 Ok(Settings { height:r.get(0)?,format:r.get(1)?,fallback:r.get(2)?,languages:serde_json::from_str(&languages).unwrap_or_default(),subtitles:r.get(4)?,supplements:r.get(5)?,concurrency:r.get::<_,i64>(6)? as usize })
             }).map_err(|e|e.to_string())?;
-            let selection=serde_json::to_string(&Selection { course_ids,settings }).map_err(|e|e.to_string())?;
+            let (course_ids, skip_item_ids, existing_job) = missing_selection(&tx, &course_ids, &settings, &downloads_dir, None)?;
+            if course_ids.is_empty() {
+                // Repeated clicks are successful no-ops when everything is reserved or ready.
+                let id = existing_job.unwrap_or(0);
+                tx.commit().map_err(|e|e.to_string())?;
+                return Ok(id);
+            }
+            let selection=serde_json::to_string(&Selection { course_ids,settings,skip_item_ids }).map_err(|e|e.to_string())?;
             tx.execute("INSERT INTO download_jobs(course_id,specialization_id,state,selection_json) VALUES (?1,?2,'queued',?3)",params![course_id,specialization_id,selection]).map_err(|e|e.to_string())?;
             let id=tx.last_insert_rowid();
             tx.commit().map_err(|e|e.to_string())?;
@@ -166,10 +191,11 @@ impl Downloads {
         }).await
     }
 
-    async fn cancelled(&self, id: i64) -> Result<bool, String> {
+    /// True when the job was cancelled or paused and the worker should stop.
+    async fn stopped(&self, id: i64) -> Result<bool, String> {
         self.db(move |c| {
             c.query_row(
-                "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+                "SELECT state IN ('cancelled','paused') FROM download_jobs WHERE id=?",
                 [id],
                 |r| r.get(0),
             )
@@ -178,9 +204,9 @@ impl Downloads {
         .await
     }
 
-    async fn wait_for_cancellation(&self, id: i64) {
+    async fn wait_for_stop(&self, id: i64) {
         loop {
-            if self.cancelled(id).await.unwrap_or(false) {
+            if self.stopped(id).await.unwrap_or(false) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(400)).await;
@@ -194,6 +220,64 @@ impl Downloads {
             if ["completed","cancelled"].contains(&state.as_str()) { return Err("This download has already finished.".into()); }
             tx.execute("UPDATE download_jobs SET state='cancelled',finished_at=unixepoch()*1000,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?",[id]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE download_tasks SET state='cancelled',finished_at=unixepoch()*1000,updated_at=unixepoch()*1000 WHERE job_id=? AND state NOT IN ('completed','skipped')",[id]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e|e.to_string())?;
+            Ok(())
+        }).await
+    }
+
+    /// Pause an active job. The worker notices within a moment and stops; partially
+    /// downloaded files are kept so the transfer can continue from where it left off.
+    pub(crate) async fn pause(&self, id: i64) -> Result<(), String> {
+        self.db(move |c| {
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+            let state=tx.query_row("SELECT state FROM download_jobs WHERE id=?",[id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.ok_or("Download not found.")?;
+            if state == "paused" { return Err("This download is already paused.".into()); }
+            if !["planning","queued","running"].contains(&state.as_str()) { return Err("Only active downloads can be paused.".into()); }
+            tx.execute("UPDATE download_jobs SET state='paused',updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?",[id]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_tasks SET state='paused',updated_at=unixepoch()*1000 WHERE job_id=? AND state IN ('queued','running')",[id]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e|e.to_string())?;
+            Ok(())
+        }).await?;
+        // Keep the paused state visible until the worker has dropped its transfers,
+        // so a quick Resume cannot cause it to miss the pause.
+        let execution = self.execution_lock(id);
+        let _execution = execution.lock().await;
+        Ok(())
+    }
+
+    /// Put a paused job back in the queue at its original position.
+    pub(crate) async fn resume(&self, id: i64) -> Result<(), String> {
+        let execution = self.execution_lock(id);
+        let _execution = execution.lock().await;
+        self.db(move |c| {
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+            let state=tx.query_row("SELECT state FROM download_jobs WHERE id=?",[id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.ok_or("Download not found.")?;
+            if state != "paused" { return Err("Only paused downloads can be resumed.".into()); }
+            tx.execute("UPDATE download_jobs SET state='queued',updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?",[id]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_tasks SET state='queued',updated_at=unixepoch()*1000 WHERE job_id=? AND state IN ('paused','running')",[id]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e|e.to_string())?;
+            Ok(())
+        }).await
+    }
+
+    /// Re-queue a failed job. Files that already finished are reused; only the
+    /// missing or failed ones are fetched again.
+    pub(crate) async fn retry(&self, id: i64) -> Result<(), String> {
+        let downloads_dir = self.downloads_dir.clone();
+        self.db(move |c| {
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+            let state=tx.query_row("SELECT state FROM download_jobs WHERE id=?",[id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.ok_or("Download not found.")?;
+            if !["failed","partial_failure"].contains(&state.as_str()) { return Err("Only failed downloads can be retried.".into()); }
+            let json: String = tx.query_row("SELECT selection_json FROM download_jobs WHERE id=?",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            let mut selection: Selection = serde_json::from_str(&json).map_err(|e|e.to_string())?;
+            let (courses, skipped, _) = missing_selection(&tx, &selection.course_ids, &selection.settings, &downloads_dir, Some(id))?;
+            if courses.is_empty() { return Ok(()); }
+            selection.course_ids = courses;
+            selection.skip_item_ids.extend(skipped);
+            let json = serde_json::to_string(&selection).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_jobs SET selection_json=?1 WHERE id=?2",params![json,id]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_jobs SET state='queued',last_error=NULL,finished_at=NULL,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?",[id]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_tasks SET state='queued',last_error_message=NULL,updated_at=unixepoch()*1000 WHERE job_id=? AND state IN ('failed','cancelled','paused','running')",[id]).map_err(|e|e.to_string())?;
             tx.commit().map_err(|e|e.to_string())?;
             Ok(())
         }).await
@@ -216,13 +300,14 @@ impl Downloads {
         let mut reused_tasks = 0usize;
         let mut saw_locked_item = false;
         for course_id in selection.course_ids {
-            if self.cancelled(job_id).await? {
+            if self.stopped(job_id).await? {
                 return Ok(());
             }
             let downloads_dir = self.downloads_dir.clone();
             let settings_clone = selection.settings.clone();
-            let (remote_id, slug, outline_state, spec_remote_ids, stored_items, course_reused) = self
-                .db(move |c| {
+            let skipped = selection.skip_item_ids.clone();
+            let (remote_id, slug, outline_state, spec_remote_ids, stored_items, course_reused) =
+                self.db(move |c| {
                     let (remote_id, slug, outline_state) = c
                         .query_row(
                             "SELECT remote_id,slug,outline_state FROM courses WHERE id=?",
@@ -249,11 +334,12 @@ impl Downloads {
                             .collect::<rusqlite::Result<Vec<_>>>()
                             .map_err(|e| e.to_string())?
                     };
-                    let stored_items = if outline_state == "ready" {
+                    let mut stored_items = if outline_state == "ready" {
                         coursera::load_outline_items(c, course_id).unwrap_or_default()
                     } else {
                         Vec::new()
                     };
+                    stored_items.retain(|item| !skipped.contains(&item.id));
                     let course_reused = if outline_state == "ready" && !stored_items.is_empty() {
                         try_reuse_ready_course(
                             c,
@@ -314,7 +400,10 @@ impl Downloads {
                 }
             };
             for item in items {
-                if self.cancelled(job_id).await? {
+                if selection.skip_item_ids.contains(&item.id) {
+                    continue;
+                }
+                if self.stopped(job_id).await? {
                     return Ok(());
                 }
                 if !is_item_downloadable(&item.kind, &selection.settings) {
@@ -354,7 +443,7 @@ impl Downloads {
                 tasks.extend(planned);
             }
         }
-        if self.cancelled(job_id).await? {
+        if self.stopped(job_id).await? {
             return Ok(());
         }
         if tasks.is_empty() && reused_tasks == 0 {
@@ -367,34 +456,23 @@ impl Downloads {
             return Err("No downloadable videos or resources were found.".into());
         }
         self.db(move |c| { c.execute("UPDATE download_jobs SET state='running',updated_at=unixepoch()*1000,revision=revision+1 WHERE id=? AND state='planning'",[job_id]).map_err(|e|e.to_string())?; Ok(()) }).await?;
-        let mut active = tokio::task::JoinSet::new();
-        for task in tasks {
-            if self.cancelled(job_id).await? {
-                break;
-            }
-            while active.len() >= selection.settings.concurrency.clamp(1, 32) {
-                active
-                    .join_next()
-                    .await
-                    .ok_or("Download task missing")?
-                    .map_err(|_| "Download task interrupted")?;
-            }
+        // Keep transfer futures inside this process so a pause drops them before
+        // acknowledging the pause or allowing a resume to open the same files.
+        let mut active = stream::iter(tasks).map(|task| {
             let worker = self.clone();
-            active.spawn(async move {
+            async move {
                 let task_id=task.id;
                 if let Err(error)=worker.transfer(job_id,task).await {
-                    let _=worker.db(move |c| { c.execute("UPDATE download_tasks SET state='failed',last_error_message=?1,updated_at=unixepoch()*1000 WHERE id=?2 AND state!='cancelled'",params![error,task_id]).map_err(|e|e.to_string())?; Ok(()) }).await;
+                    let _=worker.db(move |c| { c.execute("UPDATE download_tasks SET state='failed',last_error_message=?1,updated_at=unixepoch()*1000 WHERE id=?2 AND state NOT IN ('cancelled','paused')",params![error,task_id]).map_err(|e|e.to_string())?; Ok(()) }).await;
                 }
-            });
-        }
-        while let Some(result) = active.join_next().await {
-            result.map_err(|_| "Download task interrupted")?;
-        }
+            }
+        }).buffer_unordered(selection.settings.concurrency.clamp(1, 32));
+        while active.next().await.is_some() {}
         self.db(move |c| {
             let (total,done,failed):(i64,i64,i64)=c.query_row("SELECT count(*),coalesce(sum(state IN ('completed','skipped')),0),coalesce(sum(state='failed'),0) FROM download_tasks WHERE job_id=?",[job_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
             let state=if total>0 && done==total { "completed" } else if done>0 { "partial_failure" } else { "failed" };
-            let error=if failed>0 { Some(format!("{failed} file(s) failed. Start a new download to retry.")) } else { None };
-            c.execute("UPDATE download_jobs SET state=?1,last_error=?2,finished_at=unixepoch()*1000,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?3 AND state!='cancelled'",params![state,error,job_id]).map_err(|e|e.to_string())?;
+            let error=if failed>0 { Some(format!("{failed} file(s) failed. Use Retry to try again.")) } else { None };
+            c.execute("UPDATE download_jobs SET state=?1,last_error=?2,finished_at=unixepoch()*1000,updated_at=unixepoch()*1000,revision=revision+1 WHERE id=?3 AND state NOT IN ('cancelled','paused')",params![state,error,job_id]).map_err(|e|e.to_string())?;
             Ok(())
         }).await
     }
@@ -439,7 +517,7 @@ impl Downloads {
     }
 
     async fn transfer(&self, job_id: i64, task: Task) -> Result<(), String> {
-        if self.cancelled(job_id).await? {
+        if self.stopped(job_id).await? {
             return Ok(());
         }
         let asset_id = task.asset_id;
@@ -467,33 +545,77 @@ impl Downloads {
         tokio::fs::create_dir_all(path.parent().ok_or("Invalid file path")?)
             .await
             .map_err(|e| format!("Could not create download directory: {e}"))?;
+        // A leftover `.part` file (from a pause or interruption) lets us continue
+        // with a ranged request instead of starting over.
+        let existing_partial = if task.source.is_some() {
+            tokio::fs::metadata(&temporary)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let mut resume_from = 0u64;
         let mut response = if let Some(source) = &task.source {
-            Some(self.client.asset_response(source).await?)
+            let ranged = if existing_partial > 0 {
+                self.client
+                    .asset_response(source, existing_partial)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            match ranged {
+                Some(r)
+                    if r.status() == reqwest::StatusCode::PARTIAL_CONTENT
+                        && r.headers()
+                            .get(reqwest::header::CONTENT_RANGE)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.strip_prefix("bytes "))
+                            .and_then(|value| value.split_once('-'))
+                            .and_then(|(start, _)| start.parse::<u64>().ok())
+                            == Some(existing_partial) =>
+                {
+                    resume_from = existing_partial;
+                    Some(r)
+                }
+                Some(r) if r.status() == reqwest::StatusCode::OK => Some(r),
+                _ => Some(self.client.asset_response(source, 0).await?),
+            }
         } else {
             None
         };
-        if self.cancelled(job_id).await? {
+        if self.stopped(job_id).await? {
             return Ok(());
         }
         let total = task.inline.as_ref().map(|s| s.len() as i64).or_else(|| {
             response
                 .as_ref()
                 .and_then(|r| r.content_length())
-                .map(|n| n as i64)
+                .map(|n| (n + resume_from) as i64)
         });
         let storage_root = root.to_string_lossy().into_owned();
         let relative = task.relative.clone();
         let temp_relative = format!("{}.part", task.relative);
+        let start_bytes = resume_from as i64;
         self.db(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-            tx.execute("INSERT INTO local_files(asset_id,storage_root,relative_path,temporary_relative_path,state,bytes_present,size_bytes) VALUES (?1,?2,?3,?4,'partial',0,?5) ON CONFLICT(asset_id) DO UPDATE SET storage_root=excluded.storage_root,relative_path=excluded.relative_path,temporary_relative_path=excluded.temporary_relative_path,state='partial',bytes_present=0,size_bytes=excluded.size_bytes,completed_at=NULL,updated_at=unixepoch()*1000",params![asset_id,storage_root,relative,temp_relative,total]).map_err(|e|e.to_string())?;
-            tx.execute("UPDATE download_tasks SET state='running',downloaded_bytes=0,total_bytes=?1,attempt_count=attempt_count+1,started_at=unixepoch()*1000,updated_at=unixepoch()*1000 WHERE id=?2 AND state!='cancelled'",params![total,task_id]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT INTO local_files(asset_id,storage_root,relative_path,temporary_relative_path,state,bytes_present,size_bytes) VALUES (?1,?2,?3,?4,'partial',?6,?5) ON CONFLICT(asset_id) DO UPDATE SET storage_root=excluded.storage_root,relative_path=excluded.relative_path,temporary_relative_path=excluded.temporary_relative_path,state='partial',bytes_present=excluded.bytes_present,size_bytes=excluded.size_bytes,completed_at=NULL,updated_at=unixepoch()*1000",params![asset_id,storage_root,relative,temp_relative,total,start_bytes]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_tasks SET state='running',downloaded_bytes=?3,total_bytes=?1,attempt_count=attempt_count+1,started_at=unixepoch()*1000,updated_at=unixepoch()*1000 WHERE id=?2 AND state NOT IN ('cancelled','paused')",params![total,task_id,start_bytes]).map_err(|e|e.to_string())?;
             tx.commit().map_err(|e|e.to_string())?; Ok(())
         }).await?;
-        let mut file = tokio::fs::File::create(&temporary)
-            .await
-            .map_err(|e| format!("Could not create course file: {e}"))?;
-        let mut downloaded = 0i64;
+        let mut file = if resume_from > 0 {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&temporary)
+                .await
+                .map_err(|e| format!("Could not open course file: {e}"))?
+        } else {
+            tokio::fs::File::create(&temporary)
+                .await
+                .map_err(|e| format!("Could not create course file: {e}"))?
+        };
+        let mut downloaded = resume_from as i64;
         let mut last_update = Instant::now();
         if let Some(content) = task.inline {
             file.write_all(content.as_bytes())
@@ -504,7 +626,7 @@ impl Downloads {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|_| "File transfer interrupted. Start a new download to retry.")?
+                .map_err(|_| "File transfer interrupted. Use Retry to try again.")?
             {
                 file.write_all(&chunk)
                     .await
@@ -528,7 +650,7 @@ impl Downloads {
         file.flush().await.map_err(|e| e.to_string())?;
         file.sync_all().await.map_err(|e| e.to_string())?;
         drop(file);
-        if self.cancelled(job_id).await? {
+        if self.stopped(job_id).await? {
             return Ok(());
         }
         tokio::fs::rename(&temporary, &path)
@@ -548,7 +670,7 @@ impl Downloads {
     ) -> Result<(), String> {
         self.db(move |c| {
             let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-            tx.execute("UPDATE download_tasks SET state=CASE WHEN ?1 THEN 'completed' ELSE state END,downloaded_bytes=?2,total_bytes=?3,finished_at=CASE WHEN ?1 THEN unixepoch()*1000 ELSE finished_at END,updated_at=unixepoch()*1000 WHERE id=?4 AND state!='cancelled'",params![complete,bytes,total,task]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE download_tasks SET state=CASE WHEN ?1 THEN 'completed' ELSE state END,downloaded_bytes=?2,total_bytes=?3,finished_at=CASE WHEN ?1 THEN unixepoch()*1000 ELSE finished_at END,updated_at=unixepoch()*1000 WHERE id=?4 AND state NOT IN ('cancelled','paused')",params![complete,bytes,total,task]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE local_files SET state=CASE WHEN ?1 THEN 'ready' ELSE 'partial' END,bytes_present=?2,size_bytes=?3,completed_at=CASE WHEN ?1 THEN unixepoch()*1000 END,temporary_relative_path=CASE WHEN ?1 THEN NULL ELSE temporary_relative_path END,updated_at=unixepoch()*1000 WHERE asset_id=?4",params![complete,bytes,total,asset]).map_err(|e|e.to_string())?;
             tx.commit().map_err(|e|e.to_string())?; Ok(())
         }).await
@@ -687,6 +809,87 @@ fn is_item_downloadable(kind: &str, settings: &Settings) -> bool {
     kind == "lecture" || (settings.supplements && ["supplement", "reading"].contains(&kind))
 }
 
+/// Reserve work across both course and specialisation selections, including jobs
+/// that have not planned their files yet. Failed items in a running job can be
+/// picked up by a follow-up job without touching its other tasks.
+fn missing_selection(
+    conn: &Connection,
+    course_ids: &[i64],
+    settings: &Settings,
+    downloads_dir: &std::path::Path,
+    exclude_job: Option<i64>,
+) -> Result<(Vec<i64>, Vec<i64>, Option<i64>), String> {
+    let mut stmt = conn.prepare("SELECT id,state,selection_json FROM download_jobs WHERE state IN ('queued','planning','running','paused') AND id!=coalesce(?1,0) ORDER BY id").map_err(|e|e.to_string())?;
+    let active = stmt
+        .query_map([exclude_job], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let active = active
+        .into_iter()
+        .map(|(id, state, json)| {
+            serde_json::from_str::<Selection>(&json)
+                .map(|selection| (id, state, selection))
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut selected = Vec::new();
+    let mut skipped = Vec::new();
+    let mut existing = None;
+    for &course in course_ids {
+        let covering: Vec<_> = active
+            .iter()
+            .filter(|(_, _, s)| s.course_ids.contains(&course))
+            .collect();
+        existing = existing.or_else(|| covering.first().map(|j| j.0));
+        let items = coursera::load_outline_items(conn, course)?;
+        if items.is_empty() {
+            if covering.is_empty() {
+                selected.push(course);
+            }
+            continue;
+        }
+        let mut missing = false;
+        for item in items {
+            if !is_item_downloadable(&item.kind, settings) {
+                continue;
+            }
+            let reserved = covering.iter().any(|(id,state,selection)| {
+                if selection.skip_item_ids.contains(&item.id) { return false; }
+                if state != "running" { return true; }
+                // Planning is finished in a running job. Only explicitly failed
+                // items are eligible while its other transfers continue.
+                !conn.query_row("SELECT EXISTS(SELECT 1 FROM download_tasks t JOIN assets a ON a.id=t.asset_id WHERE t.job_id=?1 AND a.item_id=?2 AND t.state='failed')",params![id,item.id],|r|r.get::<_,bool>(0)).unwrap_or(false)
+            });
+            if reserved || item_ready_assets(conn, &item, downloads_dir, settings)?.is_some() {
+                skipped.push(item.id);
+            } else {
+                missing = true;
+            }
+        }
+        if missing {
+            selected.push(course);
+        }
+    }
+    if existing.is_none() {
+        existing = conn
+            .query_row(
+                "SELECT id FROM download_jobs WHERE EXISTS(SELECT 1 FROM json_each(selection_json,'$.course_ids') WHERE value IN (SELECT value FROM json_each(?1))) ORDER BY id DESC LIMIT 1",
+                [serde_json::to_string(course_ids).map_err(|e|e.to_string())?],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok((selected, skipped, existing))
+}
+
 fn is_local_file_ready(
     downloads_dir: &std::path::Path,
     storage_root: &str,
@@ -814,7 +1017,7 @@ fn try_reuse_ready_course(
         .map_err(|e| e.to_string())?;
     let cancelled: bool = tx
         .query_row(
-            "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+            "SELECT state IN ('cancelled','paused') FROM download_jobs WHERE id=?",
             [job],
             |r| r.get(0),
         )
@@ -842,7 +1045,7 @@ fn reuse_ready_item_assets(
         .map_err(|e| e.to_string())?;
     let cancelled: bool = tx
         .query_row(
-            "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+            "SELECT state IN ('cancelled','paused') FROM download_jobs WHERE id=?",
             [job],
             |r| r.get(0),
         )
@@ -868,7 +1071,7 @@ fn plan_assets(
         .map_err(|e| e.to_string())?;
     let cancelled: bool = tx
         .query_row(
-            "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+            "SELECT state IN ('cancelled','paused') FROM download_jobs WHERE id=?",
             [job],
             |r| r.get(0),
         )
@@ -879,6 +1082,17 @@ fn plan_assets(
     let mut tasks = Vec::new();
     let mut reused = 0usize;
     for asset in assets {
+        // A follow-up may include an item with a failed subtitle while its video
+        // is still queued or downloading. Leave those reserved assets alone.
+        let protected: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM assets a JOIN download_tasks t ON t.asset_id=a.id JOIN download_jobs j ON j.id=t.job_id
+             WHERE a.item_id=?1 AND (a.variant_key=?2 OR (?3='video' AND a.kind='video')) AND t.job_id!=?4
+             AND t.state IN ('queued','running','paused') AND j.state IN ('queued','planning','running','paused'))",
+            params![item,asset.variant,asset.kind,job], |r|r.get(0),
+        ).map_err(|e|e.to_string())?;
+        if protected {
+            continue;
+        }
         if asset.kind == "video" {
             tx.execute("UPDATE assets SET removed_at=unixepoch()*1000 WHERE item_id=?1 AND kind='video' AND variant_key!=?2",params![item,asset.variant]).map_err(|e|e.to_string())?;
         }
@@ -920,6 +1134,237 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "courseviewer-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[actix_web::test]
+    async fn repeated_download_only_selects_failed_and_missing_items() {
+        let pool = crate::test_support::pool();
+        let (base, provider) = crate::test_support::provider().await;
+        let client = Arc::new(CourseEraClient::for_test(base));
+        let (spec, courses, outlines) = coursera::fetch_specialization_bundle(&client, "systems")
+            .await
+            .unwrap();
+        let spec = coursera::import_specialization_with_outlines(
+            &mut pool.get().unwrap(),
+            &spec,
+            &courses,
+            &outlines,
+        )
+        .unwrap();
+        let root = test_dir("selection");
+        let worker = Downloads::with_dir(pool.clone(), client, root.clone());
+        let course: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT id FROM courses WHERE slug='rust'", [], |r| r.get(0))
+            .unwrap();
+        let original = worker.enqueue(Some(course), None).await.unwrap();
+        // One running course contains a failed video and a queued reading.
+        pool.get().unwrap().execute_batch(&format!("UPDATE download_jobs SET state='running' WHERE id={original};
+            INSERT INTO assets(item_id,kind,variant_key,format,height) SELECT id,'video','video:mp4:1080p','mp4',1080 FROM items WHERE course_id={course} AND content_type='lecture';
+            INSERT INTO assets(item_id,kind,variant_key,format) SELECT id,'reading','reading:0','html' FROM items WHERE course_id={course} AND content_type='supplement';
+            INSERT INTO download_tasks(job_id,asset_id,state) SELECT {original},a.id,CASE WHEN a.kind='video' THEN 'failed' ELSE 'queued' END FROM assets a JOIN items i ON i.id=a.item_id WHERE i.course_id={course};")).unwrap();
+        let failed_item: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT item_id FROM assets WHERE kind='video'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let queued_item: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT item_id FROM assets WHERE kind='reading'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let followup = worker.enqueue(None, Some(spec)).await.unwrap();
+        assert_ne!(followup, original);
+        let json: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT selection_json FROM download_jobs WHERE id=?",
+                [followup],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let selection: Selection = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            selection.course_ids.len(),
+            2,
+            "also includes the untouched course"
+        );
+        assert!(selection.skip_item_ids.contains(&queued_item));
+        assert!(!selection.skip_item_ids.contains(&failed_item));
+        worker.enqueue(None, Some(spec)).await.unwrap();
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT count(*) FROM download_jobs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "rapid repeated clicks do not duplicate follow-up jobs"
+        );
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM download_jobs WHERE id=?",
+                    [original],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            "running"
+        );
+        assert_eq!(pool.get().unwrap().query_row("SELECT state FROM download_tasks WHERE job_id=? AND asset_id=(SELECT id FROM assets WHERE item_id=?)",params![original,queued_item],|r|r.get::<_,String>(0)).unwrap(),"queued");
+        // A retry cannot take files already reserved by the new queued job.
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE download_jobs SET state='partial_failure' WHERE id=?",
+                [original],
+            )
+            .unwrap();
+        worker.retry(original).await.unwrap();
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM download_jobs WHERE id=?",
+                    [original],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            "queued"
+        );
+        let retried: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT selection_json FROM download_jobs WHERE id=?",
+                [original],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_str::<Selection>(&retried)
+                .unwrap()
+                .skip_item_ids
+                .contains(&failed_item)
+        );
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT selection_json FROM download_jobs WHERE id=?",
+                    [followup],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            json
+        );
+        provider.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn paused_transfer_resumes_partial_file_and_keeps_completed_files() {
+        let pool = crate::test_support::pool();
+        let (base, provider) = crate::test_support::provider().await;
+        let client = Arc::new(CourseEraClient::for_test(base));
+        let (course, outline) = coursera::fetch_course_bundle(&client, "rust")
+            .await
+            .unwrap();
+        let course_id = coursera::upsert_course(&pool.get().unwrap(), &course, true).unwrap();
+        coursera::store_outline(&mut pool.get().unwrap(), course_id, &outline.unwrap()).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE courses SET remote_id='slow' WHERE id=?",
+                [course_id],
+            )
+            .unwrap();
+        let root = test_dir("resume");
+        let worker = Downloads::with_dir(pool.clone(), client, root.clone());
+        let job = worker.enqueue(Some(course_id), None).await.unwrap();
+        worker.start().await.unwrap();
+        let partial = tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                let path = worker.db(move |c|c.query_row("SELECT f.temporary_relative_path FROM local_files f JOIN assets a ON a.id=f.asset_id JOIN download_tasks t ON t.asset_id=a.id WHERE t.job_id=? AND a.kind='video' AND t.state='running'",[job],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())).await.unwrap();
+                if let Some(path) = path {
+                    let path = root.join(path);
+                    if tokio::fs::metadata(&path).await.is_ok_and(|m|m.len()>0 && m.len()<256*1024) { break path; }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("transfer starts");
+        worker.pause(job).await.unwrap();
+        let size = tokio::fs::metadata(&partial).await.unwrap().len();
+        assert!(size > 0 && size < 256 * 1024);
+        assert!(worker.stopped(job).await.unwrap());
+        // The provider actually honours ranges, so appending yields exact bytes.
+        let ranged = worker
+            .client
+            .asset_response("/slow-video.mp4", size)
+            .await
+            .unwrap();
+        assert_eq!(ranged.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+        drop(ranged);
+        worker.resume(job).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = worker
+                    .db(move |c| {
+                        c.query_row("SELECT state FROM download_jobs WHERE id=?", [job], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap();
+                if state == "completed" {
+                    break;
+                }
+                assert!(
+                    !["failed", "partial_failure"].contains(&state.as_str()),
+                    "unexpected {state}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("resumed transfer completes");
+        let file: String = pool.get().unwrap().query_row("SELECT f.relative_path FROM local_files f JOIN assets a ON a.id=f.asset_id WHERE a.kind='video'",[],|r|r.get(0)).unwrap();
+        let expected: Vec<u8> = (0..256 * 1024).map(|n| (n % 251) as u8).collect();
+        assert_eq!(tokio::fs::read(root.join(&file)).await.unwrap(), expected);
+        let modified = tokio::fs::metadata(root.join(&file))
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        worker.enqueue(Some(course_id), None).await.unwrap();
+        assert_eq!(
+            tokio::fs::metadata(root.join(file))
+                .await
+                .unwrap()
+                .modified()
+                .unwrap(),
+            modified
+        );
+        provider.stop(true).await;
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[actix_web::test]
     async fn background_worker_recovers_and_downloads_specialization() {
         let pool = crate::test_support::pool();
@@ -952,7 +1397,7 @@ mod tests {
             .unwrap();
         let worker = Downloads::with_dir(pool.clone(), client, root.clone());
         let job = worker.enqueue(None, Some(id)).await.unwrap();
-        assert!(worker.enqueue(None, Some(id)).await.is_err());
+        assert_eq!(worker.enqueue(None, Some(id)).await.unwrap(), job);
         // A second specialization sharing a common course ("rust") can be queued concurrently.
         let job2 = worker.enqueue(None, Some(id2)).await.unwrap();
         // Simulate a server restart while the first job was running. Its saved quality
@@ -993,7 +1438,7 @@ mod tests {
         let files=worker.db(|c| {
             assert_eq!(c.query_row("SELECT count(*) FROM courses WHERE outline_state='ready'",[],|r|r.get::<_,i64>(0)).unwrap(),3);
             assert_eq!(c.query_row("SELECT count(*) FROM assets WHERE kind='video' AND height=360",[],|r|r.get::<_,i64>(0)).unwrap(),3);
-            assert_eq!(c.query_row("SELECT count(*) FROM download_tasks WHERE state='completed'",[],|r|r.get::<_,i64>(0)).unwrap(),12);
+            assert_eq!(c.query_row("SELECT count(*) FROM download_tasks WHERE state='completed'",[],|r|r.get::<_,i64>(0)).unwrap(),9);
             let mut stmt=c.prepare("SELECT storage_root,relative_path,size_bytes FROM local_files WHERE state='ready'").unwrap();
             Ok(stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap())
         }).await.unwrap();
@@ -1007,11 +1452,91 @@ mod tests {
                 size as u64
             );
         }
-        let queued = worker.enqueue(None, Some(id)).await.unwrap();
-        worker.cancel(queued).await.unwrap();
-        assert!(worker.cancelled(queued).await.unwrap());
+        let before: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT count(*) FROM download_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert!(worker.enqueue(None, Some(id)).await.unwrap() > 0);
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT count(*) FROM download_jobs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
         provider.stop(true).await;
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[actix_web::test]
+    async fn pause_resume_and_retry_transitions() {
+        let pool = crate::test_support::pool();
+        let (base, provider) = crate::test_support::provider().await;
+        let client = Arc::new(CourseEraClient::for_test(base));
+        let (spec, courses) = coursera::fetch_specialization(&client, "systems")
+            .await
+            .unwrap();
+        let spec_id =
+            coursera::import_specialization(&mut pool.get().unwrap(), &spec, &courses).unwrap();
+        let worker = Downloads::with_dir(pool.clone(), client, std::env::temp_dir());
+        let job = worker.enqueue(None, Some(spec_id)).await.unwrap();
+        let state = |id: i64| {
+            let pool = pool.clone();
+            move || -> String {
+                pool.get()
+                    .unwrap()
+                    .query_row("SELECT state FROM download_jobs WHERE id=?", [id], |r| {
+                        r.get(0)
+                    })
+                    .unwrap()
+            }
+        };
+
+        assert!(
+            worker.resume(job).await.is_err(),
+            "queued job cannot resume"
+        );
+        assert!(worker.retry(job).await.is_err(), "queued job cannot retry");
+        worker.pause(job).await.unwrap();
+        assert_eq!(state(job)(), "paused");
+        assert!(worker.stopped(job).await.unwrap());
+        assert!(worker.pause(job).await.is_err(), "already paused");
+        // Paused jobs are not picked up by the worker.
+        assert!(worker.claim().await.unwrap().is_none());
+        // Repeated clicks leave paused jobs in place.
+        assert_eq!(worker.enqueue(None, Some(spec_id)).await.unwrap(), job);
+
+        worker.resume(job).await.unwrap();
+        assert_eq!(state(job)(), "queued");
+        assert!(!worker.stopped(job).await.unwrap());
+
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE download_jobs SET state='failed',last_error='boom',finished_at=1 WHERE id=?",
+                [job],
+            )
+            .unwrap();
+        worker.retry(job).await.unwrap();
+        let (s, err, finished): (String, Option<String>, Option<i64>) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT state,last_error,finished_at FROM download_jobs WHERE id=?",
+                [job],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(s, "queued");
+        assert!(err.is_none() && finished.is_none());
+        worker.cancel(job).await.unwrap();
+        assert!(
+            worker.pause(job).await.is_err(),
+            "cancelled job cannot pause"
+        );
+        provider.stop(true).await;
     }
 
     #[actix_web::test]

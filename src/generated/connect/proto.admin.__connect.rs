@@ -106,6 +106,42 @@ pub type OwnedCancelDownloadResponseView = ::buffa::view::OwnedView<
         'static,
     >,
 >;
+///Shorthand for `OwnedView<PauseDownloadRequestView<'static>>`.
+pub type OwnedPauseDownloadRequestView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<PauseDownloadResponseView<'static>>`.
+pub type OwnedPauseDownloadResponseView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ResumeDownloadRequestView<'static>>`.
+pub type OwnedResumeDownloadRequestView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<ResumeDownloadResponseView<'static>>`.
+pub type OwnedResumeDownloadResponseView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadResponseView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<RetryDownloadRequestView<'static>>`.
+pub type OwnedRetryDownloadRequestView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadRequestView<
+        'static,
+    >,
+>;
+///Shorthand for `OwnedView<RetryDownloadResponseView<'static>>`.
+pub type OwnedRetryDownloadResponseView = ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadResponseView<
+        'static,
+    >,
+>;
 ///Shorthand for `OwnedView<SetItemCompletedRequestView<'static>>`.
 pub type OwnedSetItemCompletedRequestView = ::buffa::view::OwnedView<
     crate::proto::courseviewer::admin::v1::__buffa::view::SetItemCompletedRequestView<
@@ -471,6 +507,128 @@ for ::buffa::view::OwnedView<
     }
 }
 impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::PauseDownloadResponse,
+>
+for crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadResponseView<'_> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::PauseDownloadResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+    /// An `OwnedView` still holds the buffer it was decoded from, so
+    /// its large fields can be handed to the response body by
+    /// reference count instead of copied. The bare view impl above
+    /// cannot do this: it has borrows but no buffer to name.
+    fn encode_segments(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::connectrpc::EncodedBody, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body_segments(
+            self.reborrow(),
+            self.bytes(),
+            codec,
+        )
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::ResumeDownloadResponse,
+>
+for crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadResponseView<
+    '_,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::ResumeDownloadResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+    /// An `OwnedView` still holds the buffer it was decoded from, so
+    /// its large fields can be handed to the response body by
+    /// reference count instead of copied. The bare view impl above
+    /// cannot do this: it has borrows but no buffer to name.
+    fn encode_segments(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::connectrpc::EncodedBody, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body_segments(
+            self.reborrow(),
+            self.bytes(),
+            codec,
+        )
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::RetryDownloadResponse,
+>
+for crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadResponseView<'_> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self, codec)
+    }
+}
+impl ::connectrpc::Encodable<
+    crate::proto::courseviewer::admin::v1::RetryDownloadResponse,
+>
+for ::buffa::view::OwnedView<
+    crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadResponseView<
+        'static,
+    >,
+> {
+    fn encode(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::buffa::bytes::Bytes, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body(self.reborrow(), codec)
+    }
+    /// An `OwnedView` still holds the buffer it was decoded from, so
+    /// its large fields can be handed to the response body by
+    /// reference count instead of copied. The bare view impl above
+    /// cannot do this: it has borrows but no buffer to name.
+    fn encode_segments(
+        &self,
+        codec: ::connectrpc::CodecFormat,
+    ) -> ::std::result::Result<::connectrpc::EncodedBody, ::connectrpc::ConnectError> {
+        ::connectrpc::__codegen::encode_view_body_segments(
+            self.reborrow(),
+            self.bytes(),
+            codec,
+        )
+    }
+}
+impl ::connectrpc::Encodable<
     crate::proto::courseviewer::admin::v1::SetItemCompletedResponse,
 >
 for crate::proto::courseviewer::admin::v1::__buffa::view::SetItemCompletedResponseView<
@@ -565,6 +723,24 @@ pub const ADMIN_SERVICE_SAVE_SETTINGS_SPEC: ::connectrpc::Spec = ::connectrpc::S
 /// Static [`Spec`](::connectrpc::Spec) for the `CancelDownload` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
 pub const ADMIN_SERVICE_CANCEL_DOWNLOAD_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
         "/courseviewer.admin.v1.AdminService/CancelDownload",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the `PauseDownload` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
+pub const ADMIN_SERVICE_PAUSE_DOWNLOAD_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/courseviewer.admin.v1.AdminService/PauseDownload",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the `ResumeDownload` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
+pub const ADMIN_SERVICE_RESUME_DOWNLOAD_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/courseviewer.admin.v1.AdminService/ResumeDownload",
+        ::connectrpc::StreamType::Unary,
+    )
+    .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
+/// Static [`Spec`](::connectrpc::Spec) for the `RetryDownload` RPC, as seen by the server; the generated client passes it with [`origin`](::connectrpc::Spec::origin) `Client` (compare across sides with [`Spec::same_method`](::connectrpc::Spec::same_method)).
+pub const ADMIN_SERVICE_RETRY_DOWNLOAD_SPEC: ::connectrpc::Spec = ::connectrpc::Spec::server(
+        "/courseviewer.admin.v1.AdminService/RetryDownload",
         ::connectrpc::StreamType::Unary,
     )
     .with_idempotency_level(::connectrpc::IdempotencyLevel::Unknown);
@@ -829,6 +1005,75 @@ pub trait AdminService: Send + Sync + 'static {
         Output = ::connectrpc::ServiceResult<
             impl ::connectrpc::Encodable<
                 crate::proto::courseviewer::admin::v1::CancelDownloadResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the PauseDownload RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn pause_download<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::courseviewer::admin::v1::PauseDownloadResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Handle the ResumeDownload RPC.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn resume_download<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::courseviewer::admin::v1::ResumeDownloadResponse,
+            > + Send + use<'a, Self>,
+        >,
+    > + Send;
+    /// Re-queues a failed or partially failed download. Completed files are kept.
+    ///
+    /// `'a` lets the response body borrow from `&self` (e.g. server-resident state).
+    ///
+    /// `request` is borrowed from the request body and is valid for the
+    /// duration of the call; message fields are read directly on it
+    /// (zero-copy). The response cannot borrow from `request` — use
+    /// `.to_owned_message()` (or copy the specific fields) for anything
+    /// returned, stored, or moved into `tokio::spawn`.
+    fn retry_download<'a>(
+        &'a self,
+        ctx: ::connectrpc::RequestContext,
+        request: ::connectrpc::ServiceRequest<
+            '_,
+            crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+        >,
+    ) -> impl ::std::future::Future<
+        Output = ::connectrpc::ServiceResult<
+            impl ::connectrpc::Encodable<
+                crate::proto::courseviewer::admin::v1::RetryDownloadResponse,
             > + Send + use<'a, Self>,
         >,
     > + Send;
@@ -1150,6 +1395,93 @@ impl<S: AdminService> AdminServiceExt for S {
             .with_spec(ADMIN_SERVICE_CANCEL_DOWNLOAD_SPEC)
             .route_view(
                 ADMIN_SERVICE_SERVICE_NAME,
+                "PauseDownload",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.pause_download(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::courseviewer::admin::v1::PauseDownloadResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(ADMIN_SERVICE_PAUSE_DOWNLOAD_SPEC)
+            .route_view(
+                ADMIN_SERVICE_SERVICE_NAME,
+                "ResumeDownload",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.resume_download(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::courseviewer::admin::v1::ResumeDownloadResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(ADMIN_SERVICE_RESUME_DOWNLOAD_SPEC)
+            .route_view(
+                ADMIN_SERVICE_SERVICE_NAME,
+                "RetryDownload",
+                {
+                    let svc = ::std::sync::Arc::clone(&self);
+                    ::connectrpc::view_handler_fn(move |
+                        ctx,
+                        req: ::buffa::view::OwnedView<
+                            crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadRequestView<
+                                'static,
+                            >,
+                        >,
+                        format|
+                    {
+                        let svc = ::std::sync::Arc::clone(&svc);
+                        async move {
+                            let sreq = ::connectrpc::ServiceRequest::<
+                                crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+                            >::from_parts(req.reborrow(), req.bytes());
+                            svc.retry_download(ctx, sreq)
+                                .await?
+                                .encode::<
+                                    crate::proto::courseviewer::admin::v1::RetryDownloadResponse,
+                                >(format)
+                        }
+                    })
+                },
+            )
+            .with_spec(ADMIN_SERVICE_RETRY_DOWNLOAD_SPEC)
+            .route_view(
+                ADMIN_SERVICE_SERVICE_NAME,
                 "SetItemCompleted",
                 {
                     let svc = ::std::sync::Arc::clone(&self);
@@ -1283,6 +1615,24 @@ impl<T: AdminService> ::connectrpc::Dispatcher for AdminServiceServer<T> {
                 Some(
                     ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
                         .with_spec(ADMIN_SERVICE_CANCEL_DOWNLOAD_SPEC),
+                )
+            }
+            "PauseDownload" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(ADMIN_SERVICE_PAUSE_DOWNLOAD_SPEC),
+                )
+            }
+            "ResumeDownload" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(ADMIN_SERVICE_RESUME_DOWNLOAD_SPEC),
+                )
+            }
+            "RetryDownload" => {
+                Some(
+                    ::connectrpc::dispatcher::codegen::MethodDescriptor::unary(false)
+                        .with_spec(ADMIN_SERVICE_RETRY_DOWNLOAD_SPEC),
                 )
             }
             "SetItemCompleted" => {
@@ -1501,6 +1851,72 @@ impl<T: AdminService> ::connectrpc::Dispatcher for AdminServiceServer<T> {
                         .await?
                         .encode::<
                             crate::proto::courseviewer::admin::v1::CancelDownloadResponse,
+                        >(format)
+                })
+            }
+            "PauseDownload" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                        ctx.decode_options(),
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+                    >::from_parts(&req, &body);
+                    svc.pause_download(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::courseviewer::admin::v1::PauseDownloadResponse,
+                        >(format)
+                })
+            }
+            "ResumeDownload" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                        ctx.decode_options(),
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+                    >::from_parts(&req, &body);
+                    svc.resume_download(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::courseviewer::admin::v1::ResumeDownloadResponse,
+                        >(format)
+                })
+            }
+            "RetryDownload" => {
+                let svc = ::std::sync::Arc::clone(&self.inner);
+                Box::pin(async move {
+                    let body = ::connectrpc::dispatcher::codegen::request_proto_bytes::<
+                        crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+                    >(request.encoded()?, format)?;
+                    let req: crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadRequestView<
+                        '_,
+                    > = ::connectrpc::dispatcher::codegen::decode_borrowed_request_view(
+                        &body,
+                        ctx.decode_options(),
+                    )?;
+                    let req = ::connectrpc::ServiceRequest::<
+                        crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+                    >::from_parts(&req, &body);
+                    svc.retry_download(ctx, req)
+                        .await?
+                        .encode::<
+                            crate::proto::courseviewer::admin::v1::RetryDownloadResponse,
                         >(format)
                 })
             }
@@ -2053,6 +2469,141 @@ where
                 &self.transport,
                 &self.config,
                 ADMIN_SERVICE_CANCEL_DOWNLOAD_SPEC
+                    .with_origin(::connectrpc::SpecOrigin::Client),
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the PauseDownload RPC. Sends a request to /courseviewer.admin.v1.AdminService/PauseDownload.
+    pub async fn pause_download(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.pause_download_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the PauseDownload RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn pause_download_with_options(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::PauseDownloadRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::PauseDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                ADMIN_SERVICE_PAUSE_DOWNLOAD_SPEC
+                    .with_origin(::connectrpc::SpecOrigin::Client),
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the ResumeDownload RPC. Sends a request to /courseviewer.admin.v1.AdminService/ResumeDownload.
+    pub async fn resume_download(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.resume_download_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the ResumeDownload RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn resume_download_with_options(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::ResumeDownloadRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::ResumeDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                ADMIN_SERVICE_RESUME_DOWNLOAD_SPEC
+                    .with_origin(::connectrpc::SpecOrigin::Client),
+                request,
+                options,
+            )
+            .await
+    }
+    /// Call the RetryDownload RPC. Sends a request to /courseviewer.admin.v1.AdminService/RetryDownload.
+    pub async fn retry_download(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        self.retry_download_with_options(
+                request,
+                ::connectrpc::client::CallOptions::default(),
+            )
+            .await
+    }
+    /// Call the RetryDownload RPC with explicit per-call options. Options override [`ClientConfig`](::connectrpc::client::ClientConfig) defaults.
+    pub async fn retry_download_with_options(
+        &self,
+        request: crate::proto::courseviewer::admin::v1::RetryDownloadRequest,
+        options: ::connectrpc::client::CallOptions,
+    ) -> Result<
+        ::connectrpc::client::UnaryResponse<
+            ::buffa::view::OwnedView<
+                crate::proto::courseviewer::admin::v1::__buffa::view::RetryDownloadResponseView<
+                    'static,
+                >,
+            >,
+        >,
+        ::connectrpc::ConnectError,
+    > {
+        ::connectrpc::client::call_unary(
+                &self.transport,
+                &self.config,
+                ADMIN_SERVICE_RETRY_DOWNLOAD_SPEC
                     .with_origin(::connectrpc::SpecOrigin::Client),
                 request,
                 options,

@@ -87,8 +87,14 @@ fn build_course_downloads(
 
     let active_courses: HashSet<i64> = downloads
         .iter()
-        .filter(|j| ["planning", "queued", "running", "paused"].contains(&j.state.as_str()))
+        .filter(|j| ["planning", "queued", "running"].contains(&j.state.as_str()))
         .flat_map(|j| j.course_ids.iter().copied())
+        .collect();
+    let paused_courses: HashSet<i64> = downloads
+        .iter()
+        .filter(|j| j.state == "paused")
+        .flat_map(|j| j.course_ids.iter().copied())
+        .filter(|id| !active_courses.contains(id))
         .collect();
 
     let mut assets_by_item: HashMap<i64, Vec<AssetDownloadStatus>> = HashMap::new();
@@ -266,6 +272,8 @@ fn build_course_downloads(
             } else if assets.is_empty() {
                 if active_courses.contains(&course_id) {
                     "queued".to_string()
+                } else if paused_courses.contains(&course_id) {
+                    "paused".to_string()
                 } else {
                     "remaining".to_string()
                 }
@@ -273,11 +281,10 @@ fn build_course_downloads(
                 "downloaded".to_string()
             } else if assets.iter().any(|a| a.state == "downloading") {
                 "downloading".to_string()
-            } else if assets
-                .iter()
-                .any(|a| a.state == "queued" || a.state == "paused")
-            {
+            } else if assets.iter().any(|a| a.state == "queued") {
                 "queued".to_string()
+            } else if assets.iter().any(|a| a.state == "paused") {
+                "paused".to_string()
             } else if assets.iter().any(|a| a.state == "failed") {
                 if assets.iter().any(|a| a.state == "downloaded") {
                     "partial".to_string()
@@ -352,6 +359,8 @@ fn build_course_downloads(
                 .any(|i| i.downloadable && (i.state == "downloading" || i.state == "queued"))
             {
                 "downloading".to_string()
+            } else if items.iter().any(|i| i.downloadable && i.state == "paused") {
+                "paused".to_string()
             } else if items.iter().any(|i| i.downloadable && i.state == "failed") {
                 if downloaded_items > 0 {
                     "partial".to_string()
@@ -420,6 +429,8 @@ fn build_course_downloads(
                 "downloaded".to_string()
             } else if lessons.iter().any(|l| l.state == "downloading") {
                 "downloading".to_string()
+            } else if lessons.iter().any(|l| l.state == "paused") {
+                "paused".to_string()
             } else if lessons.iter().any(|l| l.state == "failed") {
                 if downloaded_items > 0 {
                     "partial".to_string()
@@ -481,6 +492,8 @@ fn build_course_downloads(
         let state = if modules.is_empty() && c.outline_state != "ready" {
             if active_courses.contains(&c.id) {
                 "downloading".to_string()
+            } else if paused_courses.contains(&c.id) {
+                "paused".to_string()
             } else {
                 c.outline_state.clone()
             }
@@ -489,6 +502,8 @@ fn build_course_downloads(
         } else if active_courses.contains(&c.id) || modules.iter().any(|m| m.state == "downloading")
         {
             "downloading".to_string()
+        } else if paused_courses.contains(&c.id) || modules.iter().any(|m| m.state == "paused") {
+            "paused".to_string()
         } else if modules.iter().any(|m| m.state == "failed") {
             if downloaded_items > 0 {
                 "partial".to_string()
@@ -825,6 +840,39 @@ impl AdminService for Admin {
             .map_err(ConnectError::failed_precondition)?;
         Response::ok(CancelDownloadResponse::default())
     }
+    async fn pause_download(
+        &self,
+        _: RequestContext,
+        request: ServiceRequest<'_, PauseDownloadRequest>,
+    ) -> ServiceResult<PauseDownloadResponse> {
+        self.downloads
+            .pause(request.id)
+            .await
+            .map_err(ConnectError::failed_precondition)?;
+        Response::ok(PauseDownloadResponse::default())
+    }
+    async fn resume_download(
+        &self,
+        _: RequestContext,
+        request: ServiceRequest<'_, ResumeDownloadRequest>,
+    ) -> ServiceResult<ResumeDownloadResponse> {
+        self.downloads
+            .resume(request.id)
+            .await
+            .map_err(ConnectError::failed_precondition)?;
+        Response::ok(ResumeDownloadResponse::default())
+    }
+    async fn retry_download(
+        &self,
+        _: RequestContext,
+        request: ServiceRequest<'_, RetryDownloadRequest>,
+    ) -> ServiceResult<RetryDownloadResponse> {
+        self.downloads
+            .retry(request.id)
+            .await
+            .map_err(ConnectError::failed_precondition)?;
+        Response::ok(RetryDownloadResponse::default())
+    }
     async fn set_item_completed(
         &self,
         _: RequestContext,
@@ -1029,8 +1077,8 @@ mod tests {
         .await;
         assert_eq!(
             duplicate_spec.status(),
-            400,
-            "duplicate specialization downloads must be rejected"
+            200,
+            "repeated specialization downloads are successful no-ops"
         );
         let started2: Value = test::call_and_read_body_json(
             &app,

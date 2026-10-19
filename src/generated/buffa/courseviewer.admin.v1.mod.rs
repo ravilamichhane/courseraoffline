@@ -59,6 +59,12 @@ pub mod __buffa {
         reg.register_json_any(super::__SAVE_SETTINGS_RESPONSE_JSON_ANY);
         reg.register_json_any(super::__CANCEL_DOWNLOAD_REQUEST_JSON_ANY);
         reg.register_json_any(super::__CANCEL_DOWNLOAD_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__PAUSE_DOWNLOAD_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__PAUSE_DOWNLOAD_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__RESUME_DOWNLOAD_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__RESUME_DOWNLOAD_RESPONSE_JSON_ANY);
+        reg.register_json_any(super::__RETRY_DOWNLOAD_REQUEST_JSON_ANY);
+        reg.register_json_any(super::__RETRY_DOWNLOAD_RESPONSE_JSON_ANY);
         reg.register_json_any(super::__SET_ITEM_COMPLETED_REQUEST_JSON_ANY);
         reg.register_json_any(super::__SET_ITEM_COMPLETED_RESPONSE_JSON_ANY);
     }
@@ -171,6 +177,30 @@ pub use self::__buffa::view::CancelDownloadRequestOwnedView;
 pub use self::__buffa::view::CancelDownloadResponseView;
 #[doc(inline)]
 pub use self::__buffa::view::CancelDownloadResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::PauseDownloadRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::PauseDownloadRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::PauseDownloadResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::PauseDownloadResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResumeDownloadRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::ResumeDownloadRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResumeDownloadResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::ResumeDownloadResponseOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::RetryDownloadRequestView;
+#[doc(inline)]
+pub use self::__buffa::view::RetryDownloadRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::RetryDownloadResponseView;
+#[doc(inline)]
+pub use self::__buffa::view::RetryDownloadResponseOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::SetItemCompletedRequestView;
 #[doc(inline)]

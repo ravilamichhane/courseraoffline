@@ -33,15 +33,13 @@ export const Route = createFileRoute("/admin/downloads")({
 
 function Downloads() {
 	const { data } = useAdmin();
-	const [jobFilter, setJobFilter] = useState("all");
-	const [structureFilter, setStructureFilter] =
-		useState<StructureFilter>("all");
+	const [filter, setFilter] = useState<StructureFilter>("active");
 	const [specializationFilter, setSpecializationFilter] =
 		useState<string>("all");
 	const [query, setQuery] = useState("");
 	const [modalTarget, setModalTarget] = useState<{
 		title: string;
-		courses: CourseDownloadStatus[];
+		courseIds: bigint[];
 	} | null>(null);
 
 	const filteredStructureCourses = useMemo(() => {
@@ -49,7 +47,11 @@ function Downloads() {
 		return data.courseDownloads.filter(
 			(c) =>
 				specializationFilter === "all" ||
-				c.specializationIds.some((id) => String(id) === specializationFilter),
+				(specializationFilter === "standalone"
+					? c.specializationIds.length === 0
+					: c.specializationIds.some(
+							(id) => String(id) === specializationFilter,
+						)),
 		);
 	}, [data, specializationFilter]);
 
@@ -71,30 +73,33 @@ function Downloads() {
 		["planning", "queued", "running", "paused"].includes(j.state),
 	);
 
-	const jobs = data.downloads.filter(
-		(j) =>
-			jobFilter === "all" ||
-			(jobFilter === "active"
-				? ["planning", "queued", "running", "paused"].includes(j.state)
-				: jobFilter === "attention"
-					? ["failed", "partial_failure"].includes(j.state)
-					: j.state === jobFilter),
-	);
+	const jobs = data.downloads.filter((job) => {
+		const matchesState =
+			filter === "active"
+				? ["planning", "queued", "running", "paused"].includes(job.state)
+				: filter === "downloaded"
+					? job.state === "completed"
+					: ["failed", "partial_failure", "cancelled"].includes(job.state);
+		return (
+			matchesState &&
+			job.courseIds.some((id) =>
+				filteredStructureCourses.some((course) => course.courseId === id),
+			) &&
+			job.name.toLowerCase().includes(query.trim().toLowerCase())
+		);
+	});
 
 	const inspectJob = (job: DownloadJob) => {
-		const courses = data.courseDownloads.filter((c) =>
-			job.courseIds.includes(c.courseId),
-		);
 		setModalTarget({
 			title: job.name,
-			courses,
+			courseIds: job.courseIds,
 		});
 	};
 
 	const inspectCourse = (course: CourseDownloadStatus) => {
 		setModalTarget({
 			title: course.name,
-			courses: [course],
+			courseIds: [course.courseId],
 		});
 	};
 
@@ -109,7 +114,7 @@ function Downloads() {
 					icon={CheckCircleIcon}
 				/>
 				<StatCard
-					title="Remaining"
+					title="Not downloaded"
 					value={summary.remainingItems}
 					icon={ClockIcon}
 				/>
@@ -127,11 +132,10 @@ function Downloads() {
 
 			<Stack gap="md">
 				<Paper withBorder className="panel">
-					<PanelHeading title="Course structure" />
 					<div className="catalog-toolbar">
 						<TextInput
 							aria-label="Search courses, modules, lessons, or items"
-							placeholder="Search structure…"
+							placeholder="Search downloads…"
 							leftSection={<MagnifyingGlassIcon size={16} />}
 							value={query}
 							onChange={(e) => setQuery(e.currentTarget.value)}
@@ -144,7 +148,8 @@ function Downloads() {
 								value={specializationFilter}
 								onChange={(v) => setSpecializationFilter(v || "all")}
 								data={[
-									{ value: "all", label: "All specialisations" },
+									{ value: "all", label: "All courses" },
+									{ value: "standalone", label: "Standalone courses" },
 									...data.specializations.map((s) => ({
 										value: String(s.id),
 										label: s.name,
@@ -157,57 +162,52 @@ function Downloads() {
 							/>
 							<SegmentedControl
 								size="xs"
-								value={structureFilter}
-								onChange={(v) => setStructureFilter(v as StructureFilter)}
+								value={filter}
+								onChange={(v) => setFilter(v as StructureFilter)}
 								data={[
-									{ value: "all", label: `All (${summary.totalItems})` },
+									{ value: "active", label: "Active" },
 									{
 										value: "downloaded",
 										label: `Downloaded (${summary.downloadedItems})`,
 									},
 									{
 										value: "remaining",
-										label: `Remaining (${summary.remainingItems})`,
+										label: `Not downloaded (${summary.remainingItems})`,
 									},
-									{ value: "attention", label: "Active / Failed" },
 								]}
 							/>
 						</Group>
 					</div>
-					<CourseStructureTree
-						courses={filteredStructureCourses}
-						filter={structureFilter}
-						query={query}
-						onInspectCourse={inspectCourse}
-					/>
 				</Paper>
-
 				<Paper withBorder className="panel">
 					<PanelHeading
-						title="Download queue"
-						action={
-							<SegmentedControl
-								size="xs"
-								value={jobFilter}
-								onChange={setJobFilter}
-								data={[
-									{ value: "all", label: `All (${data.downloads.length})` },
-									{ value: "active", label: "Active" },
-									{ value: "completed", label: "Completed" },
-									{ value: "attention", label: "Failed" },
-									{ value: "cancelled", label: "Cancelled" },
-								]}
-							/>
+						title={
+							filter === "active"
+								? "Download queue"
+								: filter === "downloaded"
+									? "Completed downloads"
+									: "Downloads to retry"
 						}
 					/>
 					<DownloadList jobs={jobs} onInspectJob={inspectJob} />
+				</Paper>
+				<Paper withBorder className="panel">
+					<PanelHeading title="Course files" />
+					<CourseStructureTree
+						courses={filteredStructureCourses}
+						filter={filter}
+						query={query}
+						onInspectCourse={inspectCourse}
+					/>
 				</Paper>
 			</Stack>
 
 			{modalTarget && (
 				<DownloadStructureModal
 					title={modalTarget.title}
-					courses={modalTarget.courses}
+					courses={data.courseDownloads.filter((course) =>
+						modalTarget.courseIds.includes(course.courseId),
+					)}
 					close={() => setModalTarget(null)}
 				/>
 			)}

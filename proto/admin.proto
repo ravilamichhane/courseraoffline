@@ -13,6 +13,10 @@ service AdminService {
   rpc DeleteSpecialization(DeleteSpecializationRequest) returns (DeleteSpecializationResponse);
   rpc SaveSettings(SaveSettingsRequest) returns (SaveSettingsResponse);
   rpc CancelDownload(CancelDownloadRequest) returns (CancelDownloadResponse);
+  rpc PauseDownload(PauseDownloadRequest) returns (PauseDownloadResponse);
+  rpc ResumeDownload(ResumeDownloadRequest) returns (ResumeDownloadResponse);
+  // Re-queues a failed or partially failed download. Completed files are kept.
+  rpc RetryDownload(RetryDownloadRequest) returns (RetryDownloadResponse);
   rpc SetItemCompleted(SetItemCompletedRequest) returns (SetItemCompletedResponse);
 }
 
@@ -204,6 +208,18 @@ message CancelDownloadRequest {
   int64 id = 1;
 }
 message CancelDownloadResponse {}
+message PauseDownloadRequest {
+  int64 id = 1;
+}
+message PauseDownloadResponse {}
+message ResumeDownloadRequest {
+  int64 id = 1;
+}
+message ResumeDownloadResponse {}
+message RetryDownloadRequest {
+  int64 id = 1;
+}
+message RetryDownloadResponse {}
 message SetItemCompletedRequest {
   int64 item_id = 1;
   bool completed = 2;

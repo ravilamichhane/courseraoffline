@@ -64,7 +64,9 @@ function Courses() {
 					: !c.archived &&
 						(status === "active" || c.metadataState === status))) &&
 			(specialization === "all" ||
-				c.specializationIds.some((id) => String(id) === specialization)),
+				(specialization === "standalone"
+					? c.specializationIds.length === 0
+					: c.specializationIds.some((id) => String(id) === specialization))),
 	);
 	const pages = Math.max(1, Math.ceil(filtered.length / 10));
 	const currentPage = Math.min(page, pages);
@@ -127,7 +129,8 @@ function Courses() {
 								setPage(1);
 							}}
 							data={[
-								{ value: "all", label: "All specialisations" },
+								{ value: "all", label: "All courses" },
+								{ value: "standalone", label: "Standalone courses" },
 								...data.specializations.map((s) => ({
 									value: String(s.id),
 									label: s.name,

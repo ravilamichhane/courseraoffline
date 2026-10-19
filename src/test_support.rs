@@ -71,11 +71,52 @@ async fn response(request: HttpRequest) -> HttpResponse {
             "onDemandCourseMaterialItems.v2":[{"id":"v1","name":"Video","contentSummary":{"typeName":"lecture"}},{"id":"r1","name":"Reading","contentSummary":{"typeName":"supplement"}}]
         }}),
         "/video.mp4" => return HttpResponse::Ok().body(vec![7u8; 32768]),
+        "/slow-video.mp4" => {
+            let size = 256 * 1024usize;
+            let offset = request
+                .headers()
+                .get("Range")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("bytes="))
+                .and_then(|v| v.strip_suffix('-'))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            if offset >= size {
+                return HttpResponse::RangeNotSatisfiable().finish();
+            }
+            let mut response = if offset > 0 {
+                HttpResponse::PartialContent()
+            } else {
+                HttpResponse::Ok()
+            };
+            if offset > 0 {
+                response.insert_header((
+                    "Content-Range",
+                    format!("bytes {offset}-{}/{size}", size - 1),
+                ));
+            }
+            return response.no_chunking((size - offset) as u64).streaming(
+                futures_util::stream::unfold(offset, move |offset| async move {
+                    if offset >= size {
+                        return None;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                    let end = (offset + 4096).min(size);
+                    let bytes: Vec<u8> = (offset..end).map(|n| (n % 251) as u8).collect();
+                    Some((Ok::<_, std::io::Error>(web::Bytes::from(bytes)), end))
+                }),
+            );
+        }
         "/caption.vtt" => {
             return HttpResponse::Ok().body("WEBVTT\n\n00:00.000 --> 00:01.000\nRust\n");
         }
         _ if path.starts_with("/api/onDemandLectureVideos.v1/") => {
-            json!({"linked":{"onDemandVideos.v1":[{"sources":{"byResolution":{"360p":{"mp4VideoUrl":"/video.mp4"},"1080p":{"mp4VideoUrl":"/video.mp4"}}},"subtitlesVtt":{"en":"/caption.vtt"}}]}})
+            let video = if path.contains("slow") {
+                "/slow-video.mp4"
+            } else {
+                "/video.mp4"
+            };
+            json!({"linked":{"onDemandVideos.v1":[{"sources":{"byResolution":{"360p":{"mp4VideoUrl":video},"1080p":{"mp4VideoUrl":video}}},"subtitlesVtt":{"en":"/caption.vtt"}}]}})
         }
         _ if path.starts_with("/api/onDemandSupplements.v1/") => {
             json!({"linked":{"openCourseAssets.v1":[{"typeName":"cml","definition":{"renderableHtmlWithMetadata":{"renderableHtml":"<p>Reading content.</p>"}}}]}})

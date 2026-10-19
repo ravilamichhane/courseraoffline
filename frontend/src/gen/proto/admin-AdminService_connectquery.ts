@@ -50,6 +50,23 @@ export const saveSettings = AdminService.method.saveSettings;
 export const cancelDownload = AdminService.method.cancelDownload;
 
 /**
+ * @generated from rpc courseviewer.admin.v1.AdminService.PauseDownload
+ */
+export const pauseDownload = AdminService.method.pauseDownload;
+
+/**
+ * @generated from rpc courseviewer.admin.v1.AdminService.ResumeDownload
+ */
+export const resumeDownload = AdminService.method.resumeDownload;
+
+/**
+ * Re-queues a failed or partially failed download. Completed files are kept.
+ *
+ * @generated from rpc courseviewer.admin.v1.AdminService.RetryDownload
+ */
+export const retryDownload = AdminService.method.retryDownload;
+
+/**
  * @generated from rpc courseviewer.admin.v1.AdminService.SetItemCompleted
  */
 export const setItemCompleted = AdminService.method.setItemCompleted;
