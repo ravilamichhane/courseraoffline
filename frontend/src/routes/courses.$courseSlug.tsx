@@ -1,16 +1,20 @@
 import {
 	ActionIcon,
+	Alert,
 	Badge,
 	Button,
+	Drawer,
 	Group,
 	Loader,
 	Paper,
 	Progress,
+	Select,
 	Stack,
 	Text,
 	TextInput,
 	Title,
 } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import {
 	ArrowLeftIcon,
 	ArrowSquareOutIcon,
@@ -26,6 +30,7 @@ import {
 	PlayCircleIcon,
 	QuestionIcon,
 	SidebarSimpleIcon,
+	WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +42,7 @@ import type {
 	LessonDownloadStatus,
 	ModuleDownloadStatus,
 } from "../gen/proto/admin_pb";
+import { learningProgress } from "../learner/progress";
 
 export const Route = createFileRoute("/courses/$courseSlug")({
 	validateSearch: (
@@ -73,9 +79,15 @@ function CourseViewerPage() {
 	const { courseSlug } = Route.useParams();
 	const search = Route.useSearch();
 	const navigate = Route.useNavigate();
-	const { data, loading, run } = useAdmin();
+	const { data, loading, loadError, notice, dismiss, refresh, run } =
+		useAdmin();
 
-	const [sidebarOpen, setSidebarOpen] = useState(true);
+	const isMobile = useMediaQuery("(max-width: 900px)", false, {
+		getInitialValueInEffect: false,
+	});
+	const [sidebarOpen, setSidebarOpen] = useState(false);
+	const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+	const sidebarVisible = isMobile ? sidebarOpen : desktopSidebarOpen;
 	const [outlineQuery, setOutlineQuery] = useState("");
 	const [collapsedModules, setCollapsedModules] = useState<
 		Record<string, boolean>
@@ -89,6 +101,7 @@ function CourseViewerPage() {
 	);
 
 	const readingRef = useRef<HTMLDivElement | null>(null);
+	const stageRef = useRef<HTMLDivElement | null>(null);
 
 	const course = useMemo(
 		() => data?.courses.find((c) => c.slug === courseSlug),
@@ -123,7 +136,7 @@ function CourseViewerPage() {
 		if (!data || !specialization) return [];
 		return specialization.courseIds
 			.map((id) => data.courses.find((c) => c.id === id))
-			.filter((c): c is NonNullable<typeof c> => Boolean(c));
+			.filter((c): c is NonNullable<typeof c> => Boolean(c) && !c?.archived);
 	}, [data, specialization]);
 
 	const flatItems = useMemo<FlattenedItem[]>(() => {
@@ -172,6 +185,13 @@ function CourseViewerPage() {
 			: undefined;
 
 	const selectItem = (itemId: bigint) => {
+		setSidebarOpen(false);
+		const entry = flatItems.find((entry) => entry.item.id === itemId);
+		if (entry)
+			setCollapsedModules((previous) => ({
+				...previous,
+				[String(entry.module.id)]: false,
+			}));
 		void navigate({
 			search: { item: String(itemId), spec: search.spec },
 		});
@@ -179,7 +199,10 @@ function CourseViewerPage() {
 
 	const toggleItemCompleted = async (itemId: bigint, completed: boolean) => {
 		setTogglingCompletedId(itemId);
-		await run(() => adminClient.setItemCompleted({ itemId, completed }));
+		await run(
+			() => adminClient.setItemCompleted({ itemId, completed }),
+			completed ? "Item marked as completed." : "Item marked as incomplete.",
+		);
 		setTogglingCompletedId(null);
 	};
 
@@ -287,6 +310,28 @@ function CourseViewerPage() {
 		};
 	}, [readingHtml]);
 
+	const activeOutlineId = activeEntry ? String(activeEntry.item.id) : undefined;
+	useEffect(() => {
+		if (!activeOutlineId || search.item) return;
+		void navigate({
+			search: { item: activeOutlineId, spec: search.spec },
+			replace: true,
+		});
+	}, [activeOutlineId, search.item, search.spec, navigate]);
+
+	useEffect(() => {
+		if (!activeOutlineId) return;
+		stageRef.current?.scrollTo({ top: 0 });
+	}, [activeOutlineId]);
+
+	useEffect(() => {
+		if (!sidebarVisible || !activeOutlineId) return;
+		const selectedItem = document.getElementById(
+			`outline-item-${activeOutlineId}`,
+		);
+		selectedItem?.scrollIntoView({ block: "nearest" });
+	}, [sidebarVisible, activeOutlineId]);
+
 	const normalizedOutlineQuery = outlineQuery.trim().toLowerCase();
 
 	const filteredModules = useMemo(() => {
@@ -341,9 +386,32 @@ function CourseViewerPage() {
 					</div>
 				</header>
 				<main className="library-main">
+					{loadError && (
+						<Alert
+							color="red"
+							title="Could not load this course"
+							icon={<WarningCircleIcon size={18} />}
+							mb="lg"
+						>
+							<Text size="sm">{loadError}</Text>
+							<Button
+								variant="light"
+								color="red"
+								size="xs"
+								mt="sm"
+								onClick={() => void refresh()}
+							>
+								Try again
+							</Button>
+						</Alert>
+					)}
 					<Paper withBorder className="panel">
 						<EmptyState
-							title="Course not found"
+							title={
+								course
+									? "This course outline is not ready yet"
+									: "Course not found"
+							}
 							action={
 								<Button component={Link} to="/" variant="light" size="xs">
 									Return to library
@@ -356,242 +424,324 @@ function CourseViewerPage() {
 		);
 	}
 
-	const totalCourseItems = flatItems.length;
-	const completedCourseItems = flatItems.filter(
-		(entry) => entry.item.completed,
-	).length;
-	const completionProgress =
-		totalCourseItems > 0
-			? Math.round((completedCourseItems / totalCourseItems) * 100)
-			: 0;
+	const {
+		total: totalCourseItems,
+		completed: completedCourseItems,
+		percent: completionProgress,
+	} = learningProgress(courseDownload);
 
-	return (
-		<div className="viewer-shell">
-			<aside
-				className={`viewer-sidebar ${sidebarOpen ? "is-open" : "is-collapsed"}`}
-			>
-				<div className="viewer-sidebar-top">
-					<Button
-						component={Link}
-						to="/"
-						variant="subtle"
-						color="gray"
-						size="compact-xs"
-						leftSection={<ArrowLeftIcon size={14} />}
-					>
-						Library
-					</Button>
-					<Button
-						component={Link}
-						to="/admin"
-						variant="subtle"
-						color="gray"
-						size="compact-xs"
-						leftSection={<GearSixIcon size={14} />}
-					>
-						Admin
-					</Button>
-				</div>
+	const sidebar = (
+		<aside
+			id="course-outline"
+			aria-label="Course contents"
+			className={`viewer-sidebar ${!isMobile && !desktopSidebarOpen ? "is-collapsed" : ""}`}
+		>
+			<div className="viewer-sidebar-top">
+				<Button
+					component={Link}
+					to="/"
+					variant="subtle"
+					color="gray"
+					size="compact-xs"
+					leftSection={<ArrowLeftIcon size={14} />}
+				>
+					Library
+				</Button>
+				<Button
+					component={Link}
+					to="/admin"
+					variant="subtle"
+					color="gray"
+					size="compact-xs"
+					leftSection={<GearSixIcon size={14} />}
+				>
+					Admin
+				</Button>
+			</div>
 
-				<div className="viewer-course-summary">
-					{specialization && (
-						<div className="viewer-spec-switcher">
-							{courseSpecializations.length > 1 ? (
-								<div className="viewer-spec-pills" style={{ marginBottom: 6 }}>
-									{courseSpecializations.map((specItem) => (
-										<Link
-											key={String(specItem.id)}
-											to="/courses/$courseSlug"
-											params={{ courseSlug: course.slug }}
-											search={{ item: search.item, spec: specItem.slug }}
-											className={`spec-course-pill ${specItem.id === specialization.id ? "active" : ""}`}
-											title={specItem.name.trim()}
-										>
-											{specItem.name.trim()}
-										</Link>
-									))}
-								</div>
-							) : (
-								<Text size="xs" c="dimmed" lineClamp={1} mb={6}>
-									{specialization.name.trim()}
-								</Text>
-							)}
-							{siblingCourses.length > 1 && (
-								<div className="viewer-spec-pills">
-									{siblingCourses.map((sib, idx) => (
-										<Link
-											key={String(sib.id)}
-											to="/courses/$courseSlug"
-											params={{ courseSlug: sib.slug }}
-											search={{ spec: specialization.slug }}
-											className={`spec-course-pill ${sib.id === course.id ? "active" : ""}`}
-											title={sib.name.trim()}
-										>
-											Course {idx + 1}
-										</Link>
-									))}
-								</div>
-							)}
-						</div>
-					)}
-
-					<Title order={2} className="viewer-course-title">
-						{course.name.trim()}
-					</Title>
-
-					<Group justify="space-between" gap="xs" mt={10} mb={5}>
-						<Text size="xs" c="dimmed">
-							{completedCourseItems}/{totalCourseItems} completed
-						</Text>
-						<Text size="xs" fw={500}>
-							{completionProgress}%
-						</Text>
-					</Group>
-					<Progress
-						value={completionProgress}
-						size={4}
-						color={completionProgress === 100 ? "teal" : "myColor"}
-					/>
-
-					<TextInput
-						placeholder="Filter lessons or items…"
-						leftSection={<MagnifyingGlassIcon size={14} />}
-						value={outlineQuery}
-						onChange={(e) => setOutlineQuery(e.currentTarget.value)}
-						size="xs"
-						mt={12}
-					/>
-				</div>
-
-				<div className="viewer-outline">
-					{filteredModules.length === 0 ? (
-						<div className="viewer-outline-empty">
+			<div className="viewer-course-summary">
+				{specialization && (
+					<div className="viewer-spec-switcher">
+						{courseSpecializations.length > 1 ? (
+							<Select
+								aria-label="Choose specialisation"
+								classNames={{ option: "viewer-course-option" }}
+								value={specialization.slug}
+								data={courseSpecializations.map((spec) => ({
+									value: spec.slug,
+									label: spec.name.trim(),
+								}))}
+								onChange={(value) => {
+									if (value)
+										void navigate({
+											search: { item: search.item, spec: value },
+										});
+								}}
+								size="xs"
+								allowDeselect={false}
+							/>
+						) : (
 							<Text size="xs" c="dimmed">
-								No items match filter.
+								{specialization.name.trim()}
 							</Text>
-						</div>
-					) : (
-						filteredModules.map((mod) => {
-							const key = String(mod.id);
-							const containsActive = activeEntry?.module.id === mod.id;
-							const isOpen =
-								normalizedOutlineQuery.length > 0 ||
-								(key in collapsedModules
-									? !collapsedModules[key]
-									: containsActive || mod.position === 0);
-							const modItems = mod.lessons.flatMap((l) => l.items);
-							const modCompletedCount = modItems.filter(
-								(i) => i.completed,
-							).length;
+						)}
+						{siblingCourses.length > 1 && (
+							<Select
+								label="Courses in this specialisation"
+								aria-label="Choose course in specialisation"
+								value={course.slug}
+								data={siblingCourses.map((sibling, index) => ({
+									value: sibling.slug,
+									label: `${index + 1}. ${sibling.name.trim()}`,
+								}))}
+								onChange={(value) => {
+									if (!value) return;
+									setSidebarOpen(false);
+									setOutlineQuery("");
+									setCollapsedModules({});
+									void navigate({
+										params: { courseSlug: value },
+										search: { spec: specialization.slug },
+									});
+								}}
+								allowDeselect={false}
+								size="sm"
+								classNames={{ option: "viewer-course-option" }}
+								mt="sm"
+							/>
+						)}
+					</div>
+				)}
 
-							return (
-								<div className="viewer-module" key={key}>
-									<button
-										type="button"
-										className="viewer-module-btn"
-										onClick={() =>
-											setCollapsedModules((prev) => ({
-												...prev,
-												[key]: isOpen,
-											}))
-										}
-										aria-expanded={isOpen}
-									>
-										<span className="structure-caret">
-											{isOpen ? (
-												<CaretDownIcon size={13} weight="bold" />
-											) : (
-												<CaretRightIcon size={13} weight="bold" />
-											)}
+				<Title order={2} className="viewer-course-title">
+					{course.name.trim()}
+				</Title>
+
+				<Group justify="space-between" gap="xs" mt={10} mb={5}>
+					<Text size="xs" c="dimmed">
+						{completedCourseItems}/{totalCourseItems} completed
+					</Text>
+					<Text size="xs" fw={500}>
+						{completionProgress}%
+					</Text>
+				</Group>
+				<Progress
+					value={completionProgress}
+					size={4}
+					color={completionProgress === 100 ? "teal" : "myColor"}
+					aria-label="Course learning progress"
+				/>
+				<div className="viewer-outline-heading">
+					<span>Course contents</span>
+					<span>{courseDownload.moduleCount} modules</span>
+				</div>
+
+				<TextInput
+					aria-label="Search course contents"
+					placeholder="Find a lesson…"
+					leftSection={<MagnifyingGlassIcon size={14} />}
+					value={outlineQuery}
+					onChange={(e) => setOutlineQuery(e.currentTarget.value)}
+					size="xs"
+					mt={12}
+				/>
+			</div>
+
+			<div className="viewer-outline">
+				{filteredModules.length === 0 ? (
+					<div className="viewer-outline-empty">
+						<Text size="xs" c="dimmed">
+							{outlineQuery
+								? "No lessons match your search."
+								: "The course outline will appear here."}
+						</Text>
+						{outlineQuery && (
+							<Button
+								variant="subtle"
+								size="xs"
+								mt="xs"
+								onClick={() => setOutlineQuery("")}
+							>
+								Clear search
+							</Button>
+						)}
+					</div>
+				) : (
+					filteredModules.map((mod) => {
+						const key = String(mod.id);
+						const containsActive = activeEntry?.module.id === mod.id;
+						const isOpen =
+							normalizedOutlineQuery.length > 0 ||
+							(key in collapsedModules
+								? !collapsedModules[key]
+								: containsActive || mod.position === 0);
+						const modItems = mod.lessons.flatMap((l) => l.items);
+						const modCompletedCount = modItems.filter(
+							(i) => i.completed,
+						).length;
+
+						return (
+							<div className="viewer-module" key={key}>
+								<button
+									type="button"
+									className="viewer-module-btn"
+									onClick={() =>
+										setCollapsedModules((prev) => ({
+											...prev,
+											[key]: isOpen,
+										}))
+									}
+									aria-expanded={isOpen}
+								>
+									<span className="structure-caret">
+										{isOpen ? (
+											<CaretDownIcon size={13} weight="bold" />
+										) : (
+											<CaretRightIcon size={13} weight="bold" />
+										)}
+									</span>
+									<div style={{ minWidth: 0, flex: 1 }}>
+										<span className="viewer-module-label">
+											Module {mod.position + 1}
 										</span>
-										<div style={{ minWidth: 0, flex: 1 }}>
-											<Text size="xs" fw={600} lineClamp={1}>
-												Module {mod.position + 1}: {mod.name.trim()}
-											</Text>
-										</div>
-										<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-											{modCompletedCount}/{modItems.length}
+										<Text size="sm" fw={600} lineClamp={2}>
+											{mod.name.trim()}
 										</Text>
-									</button>
+									</div>
+									<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+										{modCompletedCount}/{modItems.length}
+									</Text>
+								</button>
 
-									{isOpen && (
-										<div className="viewer-module-body">
-											{mod.lessons.map((les) => (
-												<div className="viewer-lesson" key={String(les.id)}>
-													<div className="viewer-lesson-label">
-														Lesson {les.position + 1}: {les.name.trim()}
-													</div>
-													<div className="viewer-lesson-items">
-														{les.items.map((item) => {
-															const isSelected = activeItem?.id === item.id;
-															return (
-																<button
-																	key={String(item.id)}
-																	type="button"
-																	className={`viewer-item-btn ${isSelected ? "active" : ""} ${item.completed ? "is-completed" : ""}`}
-																	onClick={() => selectItem(item.id)}
-																>
-																	<span className="viewer-item-icon">
-																		{item.completed ? (
-																			<CheckCircleIcon
-																				size={15}
-																				weight="fill"
-																			/>
-																		) : item.contentType === "lecture" ? (
-																			<PlayCircleIcon size={15} />
-																		) : item.contentType === "supplement" ||
-																			item.contentType === "reading" ? (
-																			<FileTextIcon size={15} />
-																		) : (
-																			<QuestionIcon size={15} />
-																		)}
-																	</span>
+								{isOpen && (
+									<div className="viewer-module-body">
+										{mod.lessons.map((les) => (
+											<div className="viewer-lesson" key={String(les.id)}>
+												<div className="viewer-lesson-label">
+													Lesson {les.position + 1}: {les.name.trim()}
+												</div>
+												<div className="viewer-lesson-items">
+													{les.items.map((item) => {
+														const isSelected = activeItem?.id === item.id;
+														return (
+															<button
+																key={String(item.id)}
+																id={`outline-item-${item.id}`}
+																type="button"
+																aria-current={isSelected ? "step" : undefined}
+																className={`viewer-item-btn ${isSelected ? "active" : ""} ${item.completed ? "is-completed" : ""}`}
+																onClick={() => selectItem(item.id)}
+															>
+																<span className="viewer-item-icon">
+																	{item.completed ? (
+																		<CheckCircleIcon size={15} weight="fill" />
+																	) : item.contentType === "lecture" ? (
+																		<PlayCircleIcon size={15} />
+																	) : item.contentType === "supplement" ||
+																		item.contentType === "reading" ? (
+																		<FileTextIcon size={15} />
+																	) : (
+																		<QuestionIcon size={15} />
+																	)}
+																</span>
+																<span className="viewer-item-copy">
 																	<span className="viewer-item-name">
-																		{item.position + 1}. {item.name.trim()}
+																		{item.name.trim()}
 																	</span>
 																	<span className="viewer-item-tag">
 																		{itemTypeLabel(item.contentType)}
+																		{item.completed
+																			? " · Completed"
+																			: item.downloadable &&
+																					item.state !== "downloaded"
+																				? " · Not downloaded"
+																				: ""}
 																	</span>
-																</button>
-															);
-														})}
-													</div>
+																</span>
+															</button>
+														);
+													})}
 												</div>
-											))}
-										</div>
-									)}
-								</div>
-							);
-						})
-					)}
-				</div>
-			</aside>
+											</div>
+										))}
+									</div>
+								)}
+							</div>
+						);
+					})
+				)}
+			</div>
+		</aside>
+	);
+
+	return (
+		<div className="viewer-shell">
+			{isMobile ? (
+				<Drawer
+					opened={sidebarOpen}
+					onClose={() => setSidebarOpen(false)}
+					title="Course contents"
+					size={360}
+					padding={0}
+					classNames={{
+						content: "viewer-drawer-content",
+						body: "viewer-drawer-body",
+					}}
+				>
+					{sidebar}
+				</Drawer>
+			) : (
+				sidebar
+			)}
 
 			<div className="viewer-main">
 				<header className="viewer-header">
 					<Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
 						<ActionIcon
+							component={Link}
+							to="/"
 							variant="subtle"
 							color="gray"
-							aria-label="Toggle course sidebar"
-							onClick={() => setSidebarOpen((v) => !v)}
+							aria-label="Back to library"
+							title="Back to library"
+						>
+							<ArrowLeftIcon size={18} />
+						</ActionIcon>
+						<ActionIcon
+							variant="subtle"
+							color="gray"
+							aria-label={
+								sidebarVisible ? "Hide course contents" : "Show course contents"
+							}
+							aria-expanded={sidebarVisible}
+							aria-controls="course-outline"
+							title="Course contents"
+							onClick={() =>
+								isMobile
+									? setSidebarOpen((value) => !value)
+									: setDesktopSidebarOpen((value) => !value)
+							}
 						>
 							<SidebarSimpleIcon size={18} />
 						</ActionIcon>
-						{activeEntry && (
-							<Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
-								<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-									Module {activeEntry.module.position + 1}
-								</Text>
-								<Text size="xs" c="dimmed">
-									/
-								</Text>
-								<Text size="xs" c="dimmed" lineClamp={1}>
-									Lesson {activeEntry.lesson.position + 1}:{" "}
-									{activeEntry.lesson.name.trim()}
-								</Text>
-							</Group>
-						)}
+						<div className="viewer-header-course">
+							<Text size="sm" fw={600} lineClamp={1}>
+								{course.name.trim()}
+							</Text>
+							{activeEntry && (
+								<Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+									<Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+										Module {activeEntry.module.position + 1}
+									</Text>
+									<Text size="xs" c="dimmed">
+										/
+									</Text>
+									<Text size="xs" c="dimmed" lineClamp={1}>
+										Lesson {activeEntry.lesson.position + 1}
+									</Text>
+								</Group>
+							)}
+						</div>
 					</Group>
 
 					<Group gap={6} wrap="nowrap">
@@ -602,7 +752,7 @@ function CourseViewerPage() {
 							leftSection={<CaretLeftIcon size={13} />}
 							onClick={() => prevEntry && selectItem(prevEntry.item.id)}
 						>
-							Prev
+							Previous
 						</Button>
 						<Button
 							size="compact-xs"
@@ -616,7 +766,32 @@ function CourseViewerPage() {
 					</Group>
 				</header>
 
-				<div className="viewer-stage">
+				<main className="viewer-stage" ref={stageRef}>
+					{loadError && (
+						<Alert color="red" title="Could not refresh the course" mb="md">
+							<Text size="sm">{loadError}</Text>
+							<Button
+								size="xs"
+								variant="light"
+								color="red"
+								mt="xs"
+								onClick={() => void refresh()}
+							>
+								Try again
+							</Button>
+						</Alert>
+					)}
+					{notice && (
+						<Alert
+							color={notice.error ? "red" : "teal"}
+							withCloseButton
+							onClose={dismiss}
+							mb="md"
+							role="status"
+						>
+							<Text size="sm">{notice.message}</Text>
+						</Alert>
+					)}
 					{!activeEntry || !activeItem ? (
 						<Paper withBorder className="panel">
 							<EmptyState title="No course items available" />
@@ -624,10 +799,16 @@ function CourseViewerPage() {
 					) : (
 						<div className="viewer-content-wrap">
 							<div className="viewer-item-header">
+								{activeEntry && (
+									<p className="learner-eyebrow">
+										MODULE {activeEntry.module.position + 1} <span> / </span>{" "}
+										{activeEntry.lesson.name.trim()}
+									</p>
+								)}
 								<Title order={1} className="viewer-item-title">
 									{activeItem.name.trim()}
 								</Title>
-								<Group gap="xs" wrap="wrap">
+								<Group gap="xs" wrap="wrap" className="viewer-item-actions">
 									<Badge size="sm" variant="light" color="gray">
 										{itemTypeLabel(activeItem.contentType)}
 									</Badge>
@@ -637,7 +818,9 @@ function CourseViewerPage() {
 										</Badge>
 									) : null}
 									<Button
-										size="compact-xs"
+										size="sm"
+										className="viewer-complete-button"
+										aria-pressed={activeItem.completed}
 										variant={activeItem.completed ? "light" : "default"}
 										color={activeItem.completed ? "teal" : "gray"}
 										loading={togglingCompletedId === activeItem.id}
@@ -654,7 +837,7 @@ function CourseViewerPage() {
 											)
 										}
 									>
-										{activeItem.completed ? "Completed" : "Mark as completed"}
+										{activeItem.completed ? "Completed" : "Mark complete"}
 									</Button>
 								</Group>
 							</div>
@@ -750,7 +933,9 @@ function CourseViewerPage() {
 												: "Item not downloaded yet"
 										}
 										action={
-											courseDownload.state !== "downloading" ? (
+											!["downloading", "queued", "planning"].includes(
+												courseDownload.state,
+											) ? (
 												<Button
 													size="xs"
 													variant="light"
@@ -839,7 +1024,7 @@ function CourseViewerPage() {
 							</div>
 						</div>
 					)}
-				</div>
+				</main>
 			</div>
 		</div>
 	);

@@ -1,10 +1,12 @@
 import {
 	Group,
+	Pagination,
 	Paper,
 	SegmentedControl,
 	Select,
 	SimpleGrid,
 	Stack,
+	Text,
 	TextInput,
 } from "@mantine/core";
 import {
@@ -37,6 +39,8 @@ function Downloads() {
 	const [specializationFilter, setSpecializationFilter] =
 		useState<string>("all");
 	const [query, setQuery] = useState("");
+	const [page, setPage] = useState(1);
+	const [pageSize, setPageSize] = useState(10);
 	const [modalTarget, setModalTarget] = useState<{
 		title: string;
 		courseIds: bigint[];
@@ -67,27 +71,38 @@ function Downloads() {
 		return { totalItems, downloadedItems, remainingItems };
 	}, [filteredStructureCourses]);
 
+	const jobs = useMemo(() => {
+		const courseIds = new Set(
+			filteredStructureCourses.map((course) => course.courseId),
+		);
+		const normalizedQuery = query.trim().toLowerCase();
+		return (
+			data?.downloads.filter((job) => {
+				const matchesState =
+					filter === "active"
+						? ["planning", "queued", "running", "paused"].includes(job.state)
+						: filter === "downloaded"
+							? job.state === "completed"
+							: ["failed", "partial_failure", "cancelled"].includes(job.state);
+				return (
+					matchesState &&
+					job.courseIds.some((id) => courseIds.has(id)) &&
+					job.name.toLowerCase().includes(normalizedQuery)
+				);
+			}) ?? []
+		);
+	}, [data, filteredStructureCourses, filter, query]);
+
+	const pages = Math.max(1, Math.ceil(jobs.length / pageSize));
+	const currentPage = Math.min(page, pages);
+	const pageStart = (currentPage - 1) * pageSize;
+	const visibleJobs = jobs.slice(pageStart, pageStart + pageSize);
+
 	if (!data) return null;
 
 	const activeJobs = data.downloads.filter((j) =>
 		["planning", "queued", "running", "paused"].includes(j.state),
 	);
-
-	const jobs = data.downloads.filter((job) => {
-		const matchesState =
-			filter === "active"
-				? ["planning", "queued", "running", "paused"].includes(job.state)
-				: filter === "downloaded"
-					? job.state === "completed"
-					: ["failed", "partial_failure", "cancelled"].includes(job.state);
-		return (
-			matchesState &&
-			job.courseIds.some((id) =>
-				filteredStructureCourses.some((course) => course.courseId === id),
-			) &&
-			job.name.toLowerCase().includes(query.trim().toLowerCase())
-		);
-	});
 
 	const inspectJob = (job: DownloadJob) => {
 		setModalTarget({
@@ -138,7 +153,10 @@ function Downloads() {
 							placeholder="Search downloads…"
 							leftSection={<MagnifyingGlassIcon size={16} />}
 							value={query}
-							onChange={(e) => setQuery(e.currentTarget.value)}
+							onChange={(e) => {
+								setQuery(e.currentTarget.value);
+								setPage(1);
+							}}
 							size="xs"
 							className="catalog-search"
 						/>
@@ -146,7 +164,10 @@ function Downloads() {
 							<Select
 								aria-label="Filter by specialisation"
 								value={specializationFilter}
-								onChange={(v) => setSpecializationFilter(v || "all")}
+								onChange={(v) => {
+									setSpecializationFilter(v || "all");
+									setPage(1);
+								}}
 								data={[
 									{ value: "all", label: "All courses" },
 									{ value: "standalone", label: "Standalone courses" },
@@ -163,7 +184,10 @@ function Downloads() {
 							<SegmentedControl
 								size="xs"
 								value={filter}
-								onChange={(v) => setFilter(v as StructureFilter)}
+								onChange={(v) => {
+									setFilter(v as StructureFilter);
+									setPage(1);
+								}}
 								data={[
 									{ value: "active", label: "Active" },
 									{
@@ -189,7 +213,40 @@ function Downloads() {
 									: "Downloads to retry"
 						}
 					/>
-					<DownloadList jobs={jobs} onInspectJob={inspectJob} />
+					<DownloadList jobs={visibleJobs} onInspectJob={inspectJob} />
+					<Group justify="space-between" gap="sm" className="table-footer">
+						<Text c="dimmed" size="xs" aria-live="polite">
+							{jobs.length
+								? `${pageStart + 1}–${Math.min(pageStart + pageSize, jobs.length)}`
+								: "0"}{" "}
+							of {jobs.length} downloads
+						</Text>
+						<Group gap="sm" wrap="wrap">
+							<Select
+								aria-label="Downloads per page"
+								value={String(pageSize)}
+								onChange={(value) => {
+									setPageSize(Number(value) || 10);
+									setPage(1);
+								}}
+								data={[10, 25, 50].map((size) => ({
+									value: String(size),
+									label: `${size} per page`,
+								}))}
+								allowDeselect={false}
+								size="xs"
+								w={120}
+							/>
+							{pages > 1 && (
+								<Pagination
+									size="xs"
+									value={currentPage}
+									onChange={setPage}
+									total={pages}
+								/>
+							)}
+						</Group>
+					</Group>
 				</Paper>
 				<Paper withBorder className="panel">
 					<PanelHeading title="Course files" />
