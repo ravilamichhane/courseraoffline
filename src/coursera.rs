@@ -216,7 +216,9 @@ pub fn import_specialization_with_outlines(
     if spec.id.is_empty() || spec.name.trim().is_empty() {
         return Err("Coursera returned incomplete specialisation details.".into());
     }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let id = tx.query_row(
         "INSERT INTO specializations(remote_id,slug,name,description,tagline,image_url,synced_at) VALUES (?1,?2,?3,?4,?5,?6,unixepoch()*1000)
          ON CONFLICT(remote_id) DO UPDATE SET slug=excluded.slug,name=excluded.name,description=excluded.description,
@@ -363,7 +365,9 @@ pub fn store_outline(
     course_id: i64,
     outline: &Outline,
 ) -> Result<Vec<DownloadItem>, String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     for table in ["modules", "lessons", "items"] {
         tx.execute(
             &format!("UPDATE {table} SET removed_at=unixepoch()*1000 WHERE course_id=?"),

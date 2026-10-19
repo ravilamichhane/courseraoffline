@@ -16,7 +16,8 @@ pub fn migrations() -> rusqlite_migration::Result<Migrations<'static>> {
 
 pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "foreign_keys", true)?;
-    conn.busy_timeout(Duration::from_secs(5))
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.busy_timeout(Duration::from_secs(30))
 }
 
 pub fn migrate(path: impl AsRef<Path>) -> DbResult<()> {
@@ -43,7 +44,10 @@ pub fn migrate(path: impl AsRef<Path>) -> DbResult<()> {
 pub fn open_pool(path: impl AsRef<Path>) -> DbResult<Pool<SqliteConnectionManager>> {
     migrate(path.as_ref())?;
     let manager = SqliteConnectionManager::file(path).with_init(|conn| configure_connection(conn));
-    Ok(Pool::new(manager)?)
+    Ok(Pool::builder()
+        .max_size(16)
+        .connection_timeout(Duration::from_secs(30))
+        .build(manager)?)
 }
 
 #[cfg(test)]

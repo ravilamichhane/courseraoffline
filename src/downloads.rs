@@ -417,7 +417,7 @@ impl Downloads {
         let relative = task.relative.clone();
         let temp_relative = format!("{}.part", task.relative);
         self.db(move |c| {
-            let tx=c.transaction().map_err(|e|e.to_string())?;
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
             tx.execute("INSERT INTO local_files(asset_id,storage_root,relative_path,temporary_relative_path,state,bytes_present,size_bytes) VALUES (?1,?2,?3,?4,'partial',0,?5) ON CONFLICT(asset_id) DO UPDATE SET storage_root=excluded.storage_root,relative_path=excluded.relative_path,temporary_relative_path=excluded.temporary_relative_path,state='partial',bytes_present=0,size_bytes=excluded.size_bytes,completed_at=NULL,updated_at=unixepoch()*1000",params![asset_id,storage_root,relative,temp_relative,total]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE download_tasks SET state='running',downloaded_bytes=0,total_bytes=?1,attempt_count=attempt_count+1,started_at=unixepoch()*1000,updated_at=unixepoch()*1000 WHERE id=?2 AND state!='cancelled'",params![total,task_id]).map_err(|e|e.to_string())?;
             tx.commit().map_err(|e|e.to_string())?; Ok(())
@@ -445,7 +445,7 @@ impl Downloads {
                 if total.is_some_and(|n| downloaded > n) {
                     return Err("File size exceeded its reported length.".into());
                 }
-                if last_update.elapsed() >= Duration::from_millis(400) {
+                if last_update.elapsed() >= Duration::from_millis(1000) {
                     self.progress(task_id, asset_id, downloaded, total, false)
                         .await?;
                     last_update = Instant::now();
@@ -479,7 +479,7 @@ impl Downloads {
         complete: bool,
     ) -> Result<(), String> {
         self.db(move |c| {
-            let tx=c.transaction().map_err(|e|e.to_string())?;
+            let tx=c.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
             tx.execute("UPDATE download_tasks SET state=CASE WHEN ?1 THEN 'completed' ELSE state END,downloaded_bytes=?2,total_bytes=?3,finished_at=CASE WHEN ?1 THEN unixepoch()*1000 ELSE finished_at END,updated_at=unixepoch()*1000 WHERE id=?4 AND state!='cancelled'",params![complete,bytes,total,task]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE local_files SET state=CASE WHEN ?1 THEN 'ready' ELSE 'partial' END,bytes_present=?2,size_bytes=?3,completed_at=CASE WHEN ?1 THEN unixepoch()*1000 END,temporary_relative_path=CASE WHEN ?1 THEN NULL ELSE temporary_relative_path END,updated_at=unixepoch()*1000 WHERE asset_id=?4",params![complete,bytes,total,asset]).map_err(|e|e.to_string())?;
             tx.commit().map_err(|e|e.to_string())?; Ok(())
@@ -622,7 +622,9 @@ fn plan_assets(
     course_slug: &str,
     assets: Vec<Asset>,
 ) -> Result<Vec<Task>, String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let cancelled: bool = tx
         .query_row(
             "SELECT state='cancelled' FROM download_jobs WHERE id=?",

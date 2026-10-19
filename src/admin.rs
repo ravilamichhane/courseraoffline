@@ -600,7 +600,9 @@ fn dashboard(conn: &mut Connection) -> Result<GetDashboardResponse, ConnectError
 }
 
 fn delete_course(conn: &mut Connection, id: i64) -> Result<(), ConnectError> {
-    let tx = conn.transaction().map_err(sql_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     let retained: i64 = tx.query_row("SELECT (SELECT count(*) FROM download_jobs WHERE course_id=?1)+(SELECT count(*) FROM local_files f JOIN assets a ON a.id=f.asset_id JOIN items i ON i.id=a.item_id WHERE i.course_id=?1)+(SELECT count(*) FROM download_tasks t JOIN assets a ON a.id=t.asset_id JOIN items i ON i.id=a.item_id WHERE i.course_id=?1)",[id],|r|r.get(0)).map_err(sql_error)?;
     if retained > 0 {
         return Err(ConnectError::failed_precondition(
