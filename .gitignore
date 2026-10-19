@@ -1,0 +1,8 @@
+/target
+*.db-shm
+*.db-wal
+downloads
+/data
+frontend/dist
+frontend/node_modules
+.env

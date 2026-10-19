@@ -1,0 +1,211 @@
+syntax = "proto3";
+
+package courseviewer.admin.v1;
+
+// Local application management. No authentication is required.
+service AdminService {
+  rpc ImportCourse(ImportCourseRequest) returns (ImportCourseResponse);
+  rpc ImportSpecialization(ImportSpecializationRequest) returns (ImportSpecializationResponse);
+  rpc StartDownload(StartDownloadRequest) returns (StartDownloadResponse);
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+  rpc SetCourseArchived(SetCourseArchivedRequest) returns (SetCourseArchivedResponse);
+  rpc DeleteCourse(DeleteCourseRequest) returns (DeleteCourseResponse);
+  rpc DeleteSpecialization(DeleteSpecializationRequest) returns (DeleteSpecializationResponse);
+  rpc SaveSettings(SaveSettingsRequest) returns (SaveSettingsResponse);
+  rpc CancelDownload(CancelDownloadRequest) returns (CancelDownloadResponse);
+  rpc SetItemCompleted(SetItemCompletedRequest) returns (SetItemCompletedResponse);
+}
+
+message ImportCourseRequest {
+  string slug = 1;
+}
+message ImportCourseResponse {
+  int64 id = 1;
+}
+message ImportSpecializationRequest {
+  string slug = 1;
+}
+message ImportSpecializationResponse {
+  int64 id = 1;
+}
+message StartDownloadRequest {
+  oneof target {
+    int64 course_id = 1;
+    int64 specialization_id = 2;
+  }
+}
+message StartDownloadResponse {
+  int64 id = 1;
+}
+
+message Course {
+  int64 id = 1;
+  string remote_id = 2;
+  string slug = 3;
+  string name = 4;
+  string description = 5;
+  string image_url = 6;
+  string estimated_workload = 7;
+  string metadata_state = 8;
+  string outline_state = 9;
+  int32 module_count = 10;
+  repeated int64 specialization_ids = 11;
+  int64 updated_at = 12;
+  bool archived = 13;
+}
+
+message Specialization {
+  int64 id = 1;
+  string remote_id = 2;
+  string slug = 3;
+  string name = 4;
+  string description = 5;
+  string tagline = 6;
+  string image_url = 7;
+  // Course order is preserved when saving.
+  repeated int64 course_ids = 8;
+  int64 updated_at = 9;
+}
+
+message DownloadJob {
+  int64 id = 1;
+  string name = 2;
+  string kind = 3;
+  string state = 4;
+  int32 task_count = 5;
+  int32 completed_tasks = 6;
+  int64 downloaded_bytes = 7;
+  int64 total_bytes = 8;
+  string last_error = 9;
+  int64 created_at = 10;
+  repeated int64 course_ids = 11;
+  int64 course_id = 12;
+  int64 specialization_id = 13;
+}
+
+message AssetDownloadStatus {
+  int64 id = 1;
+  string kind = 2;
+  string variant_key = 3;
+  string format = 4;
+  int32 height = 5;
+  string language_code = 6;
+  string state = 7;
+  int64 downloaded_bytes = 8;
+  int64 total_bytes = 9;
+  string relative_path = 10;
+  string last_error = 11;
+}
+
+message ItemDownloadStatus {
+  int64 id = 1;
+  string remote_id = 2;
+  string slug = 3;
+  string name = 4;
+  string content_type = 5;
+  int32 position = 6;
+  bool is_locked = 7;
+  bool downloadable = 8;
+  string state = 9;
+  int64 downloaded_bytes = 10;
+  int64 total_bytes = 11;
+  string last_error = 12;
+  repeated AssetDownloadStatus assets = 13;
+  bool completed = 14;
+}
+
+message LessonDownloadStatus {
+  int64 id = 1;
+  string remote_id = 2;
+  string slug = 3;
+  string name = 4;
+  int32 position = 5;
+  int32 total_items = 6;
+  int32 downloaded_items = 7;
+  int32 remaining_items = 8;
+  int64 downloaded_bytes = 9;
+  int64 total_bytes = 10;
+  string state = 11;
+  repeated ItemDownloadStatus items = 12;
+}
+
+message ModuleDownloadStatus {
+  int64 id = 1;
+  string remote_id = 2;
+  string slug = 3;
+  string name = 4;
+  int32 position = 5;
+  int32 total_items = 6;
+  int32 downloaded_items = 7;
+  int32 remaining_items = 8;
+  int64 downloaded_bytes = 9;
+  int64 total_bytes = 10;
+  string state = 11;
+  repeated LessonDownloadStatus lessons = 12;
+}
+
+message CourseDownloadStatus {
+  int64 course_id = 1;
+  string slug = 2;
+  string name = 3;
+  string outline_state = 4;
+  repeated int64 specialization_ids = 5;
+  int32 module_count = 6;
+  int32 lesson_count = 7;
+  int32 total_items = 8;
+  int32 downloaded_items = 9;
+  int32 remaining_items = 10;
+  int64 downloaded_bytes = 11;
+  int64 total_bytes = 12;
+  string state = 13;
+  string last_error = 14;
+  repeated ModuleDownloadStatus modules = 15;
+}
+
+message ApplicationSettings {
+  int32 preferred_video_height = 1;
+  string preferred_video_format = 2;
+  string quality_fallback_policy = 3;
+  repeated string subtitle_languages = 4;
+  bool download_subtitles = 5;
+  bool download_supplements = 6;
+  reserved 7;
+  int32 max_concurrent_downloads = 8;
+  string coursera_cookie = 9;
+}
+
+message GetDashboardRequest {}
+message GetDashboardResponse {
+  repeated Course courses = 1;
+  repeated Specialization specializations = 2;
+  repeated DownloadJob downloads = 3;
+  ApplicationSettings settings = 4;
+  int64 storage_bytes = 5;
+  repeated CourseDownloadStatus course_downloads = 6;
+}
+message SetCourseArchivedRequest {
+  int64 id = 1;
+  bool archived = 2;
+}
+message SetCourseArchivedResponse {}
+message DeleteCourseRequest {
+  int64 id = 1;
+}
+message DeleteCourseResponse {}
+message DeleteSpecializationRequest {
+  int64 id = 1;
+}
+message DeleteSpecializationResponse {}
+message SaveSettingsRequest {
+  ApplicationSettings settings = 1;
+}
+message SaveSettingsResponse {}
+message CancelDownloadRequest {
+  int64 id = 1;
+}
+message CancelDownloadResponse {}
+message SetItemCompletedRequest {
+  int64 item_id = 1;
+  bool completed = 2;
+}
+message SetItemCompletedResponse {}
