@@ -961,6 +961,16 @@ mod tests {
         )
         .await;
         let spec_id = spec["id"].as_str().unwrap();
+        let spec2: Value = test::call_and_read_body_json(
+            &app,
+            request(
+                "ImportSpecialization",
+                json!({"slug":"distributed-systems"}),
+            )
+            .to_request(),
+        )
+        .await;
+        let spec2_id = spec2["id"].as_str().unwrap();
         let response = test::call_service(
             &app,
             test::TestRequest::post()
@@ -974,9 +984,9 @@ mod tests {
         assert!(response.status().is_success());
         let dashboard =
             GetDashboardResponse::decode_from_slice(&test::read_body(response).await).unwrap();
-        assert_eq!(dashboard.courses.len(), 2);
-        assert_eq!(dashboard.specializations.len(), 1);
-        assert_eq!(dashboard.course_downloads.len(), 2);
+        assert_eq!(dashboard.courses.len(), 3);
+        assert_eq!(dashboard.specializations.len(), 2);
+        assert_eq!(dashboard.course_downloads.len(), 3);
         let rust = dashboard.courses.iter().find(|c| c.slug == "rust").unwrap();
         let async_rust = dashboard
             .courses
@@ -987,10 +997,10 @@ mod tests {
         assert_eq!(rust.outline_state, "ready");
         assert_eq!(rust.module_count, 1);
         assert_eq!(rust.estimated_workload, "4 weeks");
+        assert_eq!(rust.specialization_ids.len(), 2);
         assert_eq!(async_rust.metadata_state, "ready");
         assert_eq!(async_rust.outline_state, "ready");
         assert_eq!(async_rust.module_count, 1);
-        assert_eq!(dashboard.specializations[0].course_ids[1], rust.id);
         for cd in &dashboard.course_downloads {
             assert_eq!(cd.module_count, 1);
             assert_eq!(cd.lesson_count, 1);
@@ -1012,22 +1022,30 @@ mod tests {
             request("StartDownload", json!({"specializationId":spec_id})).to_request(),
         )
         .await;
-        let response = test::call_service(
+        let duplicate_spec = test::call_service(
             &app,
-            request("StartDownload", json!({"courseId":id})).to_request(),
+            request("StartDownload", json!({"specializationId":spec_id})).to_request(),
         )
         .await;
         assert_eq!(
-            response.status(),
+            duplicate_spec.status(),
             400,
-            "overlapping course downloads must be rejected"
+            "duplicate specialization downloads must be rejected"
         );
-        let response = test::call_service(
+        let started2: Value = test::call_and_read_body_json(
             &app,
-            request("CancelDownload", json!({"id":started["id"]})).to_request(),
+            request("StartDownload", json!({"specializationId":spec2_id})).to_request(),
         )
         .await;
-        assert!(response.status().is_success());
+        assert!(started2["id"].as_str().is_some());
+        for job_id in [&started["id"], &started2["id"]] {
+            let response = test::call_service(
+                &app,
+                request("CancelDownload", json!({"id":job_id})).to_request(),
+            )
+            .await;
+            assert!(response.status().is_success());
+        }
         let response = test::call_service(
             &app,
             request("SetCourseArchived", json!({"id":id,"archived":true})).to_request(),
@@ -1050,7 +1068,7 @@ mod tests {
                 .query_row("SELECT count(*) FROM download_jobs", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
         provider.stop(true).await;
     }

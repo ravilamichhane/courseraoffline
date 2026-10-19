@@ -133,17 +133,17 @@ impl Downloads {
             let course_ids=if let Some(id)=course_id {
                 let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM courses WHERE id=? AND archived_at IS NULL)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if !exists { return Err("Course not found or archived.".into()); }
+                let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM download_jobs j WHERE j.state IN ('planning','queued','running','paused') AND j.course_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                if overlap { return Err("A download for this course is already active.".into()); }
                 vec![id]
             } else if let Some(id)=specialization_id {
                 let mut stmt=tx.prepare("SELECT sc.course_id FROM specialization_courses sc JOIN courses c ON c.id=sc.course_id WHERE sc.specialization_id=? AND c.archived_at IS NULL ORDER BY sc.position").map_err(|e|e.to_string())?;
                 let ids=stmt.query_map([id],|r|r.get::<_,i64>(0)).map_err(|e|e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;
                 if ids.is_empty() { return Err("This specialisation has no active courses.".into()); }
+                let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM download_jobs j WHERE j.state IN ('planning','queued','running','paused') AND j.specialization_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                if overlap { return Err("A download for this specialisation is already active.".into()); }
                 ids
             } else { return Err("Choose a course or specialisation.".into()); };
-            for id in &course_ids {
-                let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM download_jobs j WHERE j.state IN ('planning','queued','running','paused') AND (j.course_id=?1 OR EXISTS(SELECT 1 FROM json_each(j.selection_json,'$.course_ids') x WHERE x.value=?1)))",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
-                if overlap { return Err("A download for one of these courses is already active.".into()); }
-            }
             let settings=tx.query_row("SELECT preferred_video_height,preferred_video_format,quality_fallback_policy,subtitle_languages_json,download_subtitles,download_supplements,max_concurrent_downloads FROM application_settings WHERE id=1",[],|r| {
                 let languages:String=r.get(3)?;
                 Ok(Settings { height:r.get(0)?,format:r.get(1)?,fallback:r.get(2)?,languages:serde_json::from_str(&languages).unwrap_or_default(),subtitles:r.get(4)?,supplements:r.get(5)?,concurrency:r.get::<_,i64>(6)? as usize })
@@ -213,83 +213,151 @@ impl Downloads {
         })
         .await?;
         let mut tasks = Vec::new();
+        let mut reused_tasks = 0usize;
         let mut saw_locked_item = false;
         for course_id in selection.course_ids {
             if self.cancelled(job_id).await? {
                 return Ok(());
             }
-            let (remote_id, slug, spec_remote_ids) = self
+            let downloads_dir = self.downloads_dir.clone();
+            let settings_clone = selection.settings.clone();
+            let (remote_id, slug, outline_state, spec_remote_ids, stored_items, course_reused) = self
                 .db(move |c| {
-                    let (remote_id, slug) = c
+                    let (remote_id, slug, outline_state) = c
                         .query_row(
-                            "SELECT remote_id,slug FROM courses WHERE id=?",
+                            "SELECT remote_id,slug,outline_state FROM courses WHERE id=?",
                             [course_id],
-                            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                            |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, String>(1)?,
+                                    r.get::<_, String>(2)?,
+                                ))
+                            },
                         )
                         .map_err(|e| e.to_string())?;
-                    let mut stmt = c
-                        .prepare(
-                            "SELECT s.remote_id FROM specializations s
-                             JOIN specialization_courses sc ON sc.specialization_id = s.id
-                             WHERE sc.course_id = ?",
-                        )
-                        .map_err(|e| e.to_string())?;
-                    let specs = stmt
-                        .query_map([course_id], |r| r.get::<_, String>(0))
-                        .map_err(|e| e.to_string())?
-                        .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(|e| e.to_string())?;
-                    Ok((remote_id, slug, specs))
+                    let specs = {
+                        let mut stmt = c
+                            .prepare(
+                                "SELECT s.remote_id FROM specializations s
+                                 JOIN specialization_courses sc ON sc.specialization_id = s.id
+                                 WHERE sc.course_id = ?",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        stmt.query_map([course_id], |r| r.get::<_, String>(0))
+                            .map_err(|e| e.to_string())?
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                            .map_err(|e| e.to_string())?
+                    };
+                    let stored_items = if outline_state == "ready" {
+                        coursera::load_outline_items(c, course_id).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    let course_reused = if outline_state == "ready" && !stored_items.is_empty() {
+                        try_reuse_ready_course(
+                            c,
+                            job_id,
+                            &stored_items,
+                            &downloads_dir,
+                            &settings_clone,
+                        )?
+                    } else {
+                        None
+                    };
+                    Ok((
+                        remote_id,
+                        slug,
+                        outline_state,
+                        specs,
+                        stored_items,
+                        course_reused,
+                    ))
                 })
                 .await?;
+            if let Some(reused) = course_reused {
+                reused_tasks += reused;
+                continue;
+            }
             for spec_remote_id in spec_remote_ids {
                 self.client
                     .ensure_specialization_enrolled(&spec_remote_id)
                     .await;
             }
-            let outline = match coursera::fetch_outline_with_enrollment(
+            let items = match coursera::fetch_outline_with_enrollment(
                 &self.client,
                 &remote_id,
                 &slug,
             )
             .await
             {
-                Ok(value) => value,
+                Ok(outline) => {
+                    self.db(move |c| coursera::store_outline(c, course_id, &outline))
+                        .await?
+                }
                 Err(error) => {
-                    let message = error.clone();
-                    self.db(move |c| { c.execute("UPDATE courses SET outline_state='failed',last_sync_error=?1,updated_at=unixepoch()*1000 WHERE id=?2",params![message,course_id]).map_err(|e|e.to_string())?; Ok(()) }).await?;
-                    return Err(error);
+                    if outline_state == "ready" && !stored_items.is_empty() {
+                        stored_items
+                    } else {
+                        let message = error.clone();
+                        self.db(move |c| {
+                            c.execute(
+                                "UPDATE courses SET outline_state='failed',last_sync_error=?1,updated_at=unixepoch()*1000 WHERE id=?2",
+                                params![message, course_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            Ok(())
+                        })
+                        .await?;
+                        return Err(error);
+                    }
                 }
             };
-            let items = self
-                .db(move |c| coursera::store_outline(c, course_id, &outline))
-                .await?;
             for item in items {
                 if self.cancelled(job_id).await? {
                     return Ok(());
                 }
-                if item.kind != "lecture"
-                    && !(selection.settings.supplements
-                        && ["supplement", "reading"].contains(&item.kind.as_str()))
-                {
+                if !is_item_downloadable(&item.kind, &selection.settings) {
                     continue;
                 }
                 if item.locked {
                     saw_locked_item = true;
                     continue;
                 }
+                let downloads_dir = self.downloads_dir.clone();
+                let settings_clone = selection.settings.clone();
+                let item_clone = item.clone();
+                let item_reused = self
+                    .db(move |c| {
+                        reuse_ready_item_assets(
+                            c,
+                            job_id,
+                            &item_clone,
+                            &downloads_dir,
+                            &settings_clone,
+                        )
+                    })
+                    .await?;
+                if item_reused > 0 {
+                    reused_tasks += item_reused;
+                    continue;
+                }
                 let assets = self.resolve(&remote_id, &item, &selection.settings).await?;
                 let course_slug = slug.clone();
-                let planned = self
-                    .db(move |c| plan_assets(c, job_id, item.id, &course_slug, assets))
+                let downloads_dir = self.downloads_dir.clone();
+                let (planned, reused) = self
+                    .db(move |c| {
+                        plan_assets(c, job_id, item.id, &course_slug, &downloads_dir, assets)
+                    })
                     .await?;
+                reused_tasks += reused;
                 tasks.extend(planned);
             }
         }
         if self.cancelled(job_id).await? {
             return Ok(());
         }
-        if tasks.is_empty() {
+        if tasks.is_empty() && reused_tasks == 0 {
             if saw_locked_item {
                 return Err(
                     "Course materials are locked. Check your Coursera enrollment and cookie.txt."
@@ -615,13 +683,132 @@ fn safe_component(value: &str) -> String {
     }
 }
 
-fn plan_assets(
+fn is_item_downloadable(kind: &str, settings: &Settings) -> bool {
+    kind == "lecture" || (settings.supplements && ["supplement", "reading"].contains(&kind))
+}
+
+fn is_local_file_ready(
+    downloads_dir: &std::path::Path,
+    storage_root: &str,
+    relative_path: &str,
+    size_bytes: i64,
+) -> bool {
+    if relative_path.is_empty() || size_bytes < 0 {
+        return false;
+    }
+    let expected = size_bytes as u64;
+    std::fs::metadata(downloads_dir.join(relative_path)).is_ok_and(|m| m.len() == expected)
+        || (!storage_root.is_empty()
+            && std::fs::metadata(PathBuf::from(storage_root).join(relative_path))
+                .is_ok_and(|m| m.len() == expected))
+}
+
+fn item_ready_assets(
+    conn: &Connection,
+    item: &coursera::DownloadItem,
+    downloads_dir: &std::path::Path,
+    settings: &Settings,
+) -> Result<Option<Vec<(i64, i64)>>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.kind, a.format, a.height,
+                    coalesce(f.state, ''), coalesce(f.storage_root, ''), coalesce(f.relative_path, ''), coalesce(f.size_bytes, -1)
+             FROM assets a
+             LEFT JOIN local_files f ON f.asset_id = a.id
+             WHERE a.item_id = ?1 AND a.removed_at IS NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([item.id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut has_matching_video = item.kind != "lecture";
+    let mut ready = Vec::with_capacity(rows.len());
+    for (asset_id, kind, format, height, state, storage_root, relative_path, size_bytes) in rows {
+        if state != "ready"
+            || !is_local_file_ready(downloads_dir, &storage_root, &relative_path, size_bytes)
+        {
+            return Ok(None);
+        }
+        if kind == "video" {
+            let height_ok = settings.fallback != "exact" || height == Some(settings.height);
+            if format == settings.format && height_ok {
+                has_matching_video = true;
+            } else {
+                return Ok(None);
+            }
+        }
+        ready.push((asset_id, size_bytes));
+    }
+    if !has_matching_video {
+        return Ok(None);
+    }
+    Ok(Some(ready))
+}
+
+fn mark_assets_completed_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    job: i64,
+    assets: &[(i64, i64)],
+) -> Result<(), String> {
+    for &(asset_id, size_bytes) in assets {
+        tx.execute(
+            "INSERT INTO download_tasks(job_id, asset_id, state, downloaded_bytes, total_bytes, started_at, finished_at, updated_at)
+             VALUES (?1, ?2, 'completed', ?3, ?3, unixepoch()*1000, unixepoch()*1000, unixepoch()*1000)
+             ON CONFLICT(job_id, asset_id) DO UPDATE SET
+                 state = 'completed',
+                 downloaded_bytes = excluded.downloaded_bytes,
+                 total_bytes = excluded.total_bytes,
+                 started_at = coalesce(download_tasks.started_at, excluded.started_at),
+                 finished_at = coalesce(download_tasks.finished_at, excluded.finished_at),
+                 updated_at = unixepoch()*1000",
+            params![job, asset_id, size_bytes],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn try_reuse_ready_course(
     conn: &mut Connection,
     job: i64,
-    item: i64,
-    course_slug: &str,
-    assets: Vec<Asset>,
-) -> Result<Vec<Task>, String> {
+    items: &[coursera::DownloadItem],
+    downloads_dir: &std::path::Path,
+    settings: &Settings,
+) -> Result<Option<usize>, String> {
+    let mut downloadable_count = 0usize;
+    let mut all_ready = Vec::new();
+    for item in items {
+        if !is_item_downloadable(&item.kind, settings) {
+            continue;
+        }
+        if item.locked {
+            return Ok(None);
+        }
+        downloadable_count += 1;
+        match item_ready_assets(conn, item, downloads_dir, settings)? {
+            Some(ready) => all_ready.extend(ready),
+            None => return Ok(None),
+        }
+    }
+    if downloadable_count == 0 || all_ready.is_empty() {
+        return Ok(None);
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -633,14 +820,84 @@ fn plan_assets(
         )
         .map_err(|e| e.to_string())?;
     if cancelled {
-        return Ok(Vec::new());
+        return Ok(Some(0));
+    }
+    mark_assets_completed_in_tx(&tx, job, &all_ready)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(all_ready.len()))
+}
+
+fn reuse_ready_item_assets(
+    conn: &mut Connection,
+    job: i64,
+    item: &coursera::DownloadItem,
+    downloads_dir: &std::path::Path,
+    settings: &Settings,
+) -> Result<usize, String> {
+    let Some(ready) = item_ready_assets(conn, item, downloads_dir, settings)? else {
+        return Ok(0);
+    };
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let cancelled: bool = tx
+        .query_row(
+            "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+            [job],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if cancelled {
+        return Ok(0);
+    }
+    mark_assets_completed_in_tx(&tx, job, &ready)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ready.len())
+}
+
+fn plan_assets(
+    conn: &mut Connection,
+    job: i64,
+    item: i64,
+    course_slug: &str,
+    downloads_dir: &std::path::Path,
+    assets: Vec<Asset>,
+) -> Result<(Vec<Task>, usize), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let cancelled: bool = tx
+        .query_row(
+            "SELECT state='cancelled' FROM download_jobs WHERE id=?",
+            [job],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if cancelled {
+        return Ok((Vec::new(), 0));
     }
     let mut tasks = Vec::new();
+    let mut reused = 0usize;
     for asset in assets {
         if asset.kind == "video" {
             tx.execute("UPDATE assets SET removed_at=unixepoch()*1000 WHERE item_id=?1 AND kind='video' AND variant_key!=?2",params![item,asset.variant]).map_err(|e|e.to_string())?;
         }
         let id:i64=tx.query_row("INSERT INTO assets(item_id,kind,variant_key,format,height,language_code,source_url,inline_content,source_resolved_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,unixepoch()*1000) ON CONFLICT(item_id,variant_key) DO UPDATE SET source_url=excluded.source_url,inline_content=excluded.inline_content,source_resolved_at=unixepoch()*1000,removed_at=NULL,updated_at=unixepoch()*1000 RETURNING id",params![item,asset.kind,asset.variant,asset.format,asset.height,asset.language,asset.source,asset.inline],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let existing_ready = tx
+            .query_row(
+                "SELECT storage_root, relative_path, size_bytes FROM local_files WHERE asset_id=? AND state='ready'",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((storage_root, relative_path, size_bytes)) = existing_ready {
+            if is_local_file_ready(downloads_dir, &storage_root, &relative_path, size_bytes) {
+                mark_assets_completed_in_tx(&tx, job, &[(id, size_bytes)])?;
+                reused += 1;
+                continue;
+            }
+        }
         let task_id:i64=tx.query_row("INSERT INTO download_tasks(job_id,asset_id) VALUES (?1,?2) ON CONFLICT(job_id,asset_id) DO UPDATE SET state=CASE WHEN download_tasks.state='completed' THEN 'completed' ELSE 'queued' END RETURNING id",params![job,id],|r|r.get(0)).map_err(|e|e.to_string())?;
         tasks.push(Task {
             id: task_id,
@@ -655,7 +912,7 @@ fn plan_assets(
         });
     }
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(tasks)
+    Ok((tasks, reused))
 }
 
 #[cfg(test)]
@@ -673,6 +930,11 @@ mod tests {
             .unwrap();
         let id =
             coursera::import_specialization(&mut pool.get().unwrap(), &spec, &courses).unwrap();
+        let (spec2, courses2) = coursera::fetch_specialization(&client, "distributed-systems")
+            .await
+            .unwrap();
+        let id2 =
+            coursera::import_specialization(&mut pool.get().unwrap(), &spec2, &courses2).unwrap();
         let root = std::env::temp_dir().join(format!(
             "courseviewer-download-test-{}-{}",
             std::process::id(),
@@ -691,41 +953,51 @@ mod tests {
         let worker = Downloads::with_dir(pool.clone(), client, root.clone());
         let job = worker.enqueue(None, Some(id)).await.unwrap();
         assert!(worker.enqueue(None, Some(id)).await.is_err());
-        // Simulate a server restart while the job was running. Its saved quality
+        // A second specialization sharing a common course ("rust") can be queued concurrently.
+        let job2 = worker.enqueue(None, Some(id2)).await.unwrap();
+        // Simulate a server restart while the first job was running. Its saved quality
         // remains 720 even if the user changes preferences after enqueueing it.
-        pool.get().unwrap().execute_batch("UPDATE download_jobs SET state='running'; UPDATE application_settings SET preferred_video_height=1080;").unwrap();
+        pool.get().unwrap().execute_batch("UPDATE download_jobs SET state='running' WHERE id=1; UPDATE application_settings SET preferred_video_height=1080;").unwrap();
         worker.start().await.unwrap();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                let state = worker
+                let (state1, state2) = worker
                     .db(move |c| {
-                        c.query_row("SELECT state FROM download_jobs WHERE id=?", [job], |r| {
-                            r.get::<_, String>(0)
-                        })
-                        .map_err(|e| e.to_string())
+                        let s1: String = c
+                            .query_row("SELECT state FROM download_jobs WHERE id=?", [job], |r| {
+                                r.get(0)
+                            })
+                            .map_err(|e| e.to_string())?;
+                        let s2: String = c
+                            .query_row("SELECT state FROM download_jobs WHERE id=?", [job2], |r| {
+                                r.get(0)
+                            })
+                            .map_err(|e| e.to_string())?;
+                        Ok((s1, s2))
                     })
                     .await
                     .unwrap();
-                if state == "completed" {
+                if state1 == "completed" && state2 == "completed" {
                     break;
                 }
                 assert!(
-                    !["failed", "partial_failure"].contains(&state.as_str()),
-                    "job failed: {state}"
+                    !["failed", "partial_failure"].contains(&state1.as_str())
+                        && !["failed", "partial_failure"].contains(&state2.as_str()),
+                    "job failed: {state1}, {state2}"
                 );
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         })
         .await
-        .expect("background job completes without an open UI");
+        .expect("background jobs complete without an open UI");
         let files=worker.db(|c| {
-            assert_eq!(c.query_row("SELECT count(*) FROM courses WHERE outline_state='ready'",[],|r|r.get::<_,i64>(0)).unwrap(),2);
-            assert_eq!(c.query_row("SELECT count(*) FROM assets WHERE kind='video' AND height=360",[],|r|r.get::<_,i64>(0)).unwrap(),2);
-            assert_eq!(c.query_row("SELECT count(*) FROM download_tasks WHERE state='completed'",[],|r|r.get::<_,i64>(0)).unwrap(),6);
+            assert_eq!(c.query_row("SELECT count(*) FROM courses WHERE outline_state='ready'",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+            assert_eq!(c.query_row("SELECT count(*) FROM assets WHERE kind='video' AND height=360",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+            assert_eq!(c.query_row("SELECT count(*) FROM download_tasks WHERE state='completed'",[],|r|r.get::<_,i64>(0)).unwrap(),12);
             let mut stmt=c.prepare("SELECT storage_root,relative_path,size_bytes FROM local_files WHERE state='ready'").unwrap();
             Ok(stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap())
         }).await.unwrap();
-        assert_eq!(files.len(), 6);
+        assert_eq!(files.len(), 9);
         for (directory, relative, size) in files {
             assert_eq!(
                 tokio::fs::metadata(PathBuf::from(directory).join(relative))

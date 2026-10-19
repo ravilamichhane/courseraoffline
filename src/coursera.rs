@@ -165,11 +165,12 @@ pub async fn fetch_specialization_bundle(
     let mut outlines = HashMap::new();
     for remote_id in &spec.course_ids {
         if let Some(course) = courses.iter_mut().find(|c| &c.id == remote_id) {
-            if let Ok(full_course) = fetch_course(client, &course.slug).await {
+            if let Ok(mut full_course) = fetch_course(client, &course.slug).await {
+                full_course.id = remote_id.clone();
                 *course = full_course;
             }
             let outline = fetch_outline_with_enrollment(client, &course.id, &course.slug).await;
-            outlines.insert(course.id.clone(), outline);
+            outlines.insert(remote_id.clone(), outline);
         }
     }
     Ok((spec, courses, outlines))
@@ -185,17 +186,57 @@ fn validate_course(c: &RemoteCourse) -> Result<(), String> {
 
 pub fn upsert_course(conn: &Connection, c: &RemoteCourse, full: bool) -> Result<i64, String> {
     validate_course(c)?;
+    let image = if c.photo_url.is_empty() {
+        &c.promo_photo
+    } else {
+        &c.photo_url
+    };
+    let state = if full { "ready" } else { "summary" };
+    let existing_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM courses WHERE remote_id = ?1 OR slug = ?2 ORDER BY (remote_id = ?1) DESC LIMIT 1",
+            params![c.id, c.slug],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(id) = existing_id {
+        conn.execute(
+            "UPDATE courses SET
+                remote_id = ?1,
+                slug = ?2,
+                name = ?3,
+                description = ?4,
+                image_url = ?5,
+                estimated_workload = CASE WHEN ?9 OR ?6 != '' THEN ?6 ELSE courses.estimated_workload END,
+                remote_status = CASE WHEN ?9 OR ?7 != '' THEN ?7 ELSE courses.remote_status END,
+                metadata_state = CASE WHEN ?9 THEN 'ready' ELSE courses.metadata_state END,
+                metadata_synced_at = unixepoch() * 1000,
+                last_sync_error = NULL,
+                updated_at = unixepoch() * 1000
+             WHERE id = ?8",
+            params![
+                c.id,
+                c.slug,
+                c.name,
+                c.description,
+                image,
+                c.estimated_workload,
+                c.course_status,
+                id,
+                full
+            ],
+        )
+        .map_err(|e| format!("Could not save Coursera course: {e}"))?;
+        return Ok(id);
+    }
     conn.query_row(
         "INSERT INTO courses(remote_id,slug,name,description,image_url,estimated_workload,remote_status,metadata_state,metadata_synced_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,unixepoch()*1000)
-         ON CONFLICT(remote_id) DO UPDATE SET slug=excluded.slug,name=excluded.name,description=excluded.description,
-         image_url=excluded.image_url,estimated_workload=CASE WHEN ?9 OR excluded.estimated_workload!='' THEN excluded.estimated_workload ELSE courses.estimated_workload END,
-         remote_status=CASE WHEN ?9 OR excluded.remote_status!='' THEN excluded.remote_status ELSE courses.remote_status END,
-         metadata_state=CASE WHEN ?9 THEN 'ready' ELSE courses.metadata_state END,metadata_synced_at=unixepoch()*1000,
-         last_sync_error=NULL,updated_at=unixepoch()*1000 RETURNING id",
-        params![c.id,c.slug,c.name,c.description,if c.photo_url.is_empty() { &c.promo_photo } else { &c.photo_url },c.estimated_workload,c.course_status,if full { "ready" } else { "summary" },full],
+         RETURNING id",
+        params![c.id, c.slug, c.name, c.description, image, c.estimated_workload, c.course_status, state],
         |r| r.get(0),
-    ).map_err(|e| format!("Could not save Coursera course: {e}"))
+    )
+    .map_err(|e| format!("Could not save Coursera course: {e}"))
 }
 
 pub fn import_specialization(
@@ -238,7 +279,13 @@ pub fn import_specialization_with_outlines(
             .find(|c| &c.id == remote_id)
             .ok_or("Missing linked course")?;
         let course_id = upsert_course(&tx, course, true)?;
-        tx.execute("INSERT INTO specialization_courses(specialization_id,course_id,position) VALUES (?1,?2,?3)",params![id,course_id,position as i64]).map_err(|e|e.to_string())?;
+        tx.execute(
+            "INSERT INTO specialization_courses(specialization_id,course_id,position)
+             VALUES (?1,?2,?3)
+             ON CONFLICT(specialization_id,course_id) DO UPDATE SET position=excluded.position",
+            params![id, course_id, position as i64],
+        )
+        .map_err(|e| e.to_string())?;
         saved_courses.push((course_id, remote_id.clone()));
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -250,7 +297,11 @@ pub fn import_specialization_with_outlines(
                 }
                 Err(err) => {
                     conn.execute(
-                        "UPDATE courses SET outline_state='failed',last_sync_error=?1,updated_at=unixepoch()*1000 WHERE id=?2",
+                        "UPDATE courses SET
+                            outline_state = CASE WHEN outline_state = 'ready' THEN 'ready' ELSE 'failed' END,
+                            last_sync_error = ?1,
+                            updated_at = unixepoch() * 1000
+                         WHERE id = ?2",
                         params![err, course_id],
                     )
                     .map_err(|e| e.to_string())?;
@@ -424,6 +475,34 @@ pub fn store_outline(
     tx.execute("UPDATE courses SET outline_state='ready',outline_synced_at=unixepoch()*1000,last_sync_error=NULL,updated_at=unixepoch()*1000 WHERE id=?",[course_id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(items)
+}
+
+pub fn load_outline_items(conn: &Connection, course_id: i64) -> Result<Vec<DownloadItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id, i.remote_id, i.content_type, i.is_locked != 0
+             FROM items i
+             JOIN lessons l ON l.id = i.lesson_id
+             JOIN modules m ON m.id = l.module_id
+             WHERE i.course_id = ?1
+               AND i.removed_at IS NULL
+               AND l.removed_at IS NULL
+               AND m.removed_at IS NULL
+             ORDER BY m.position, l.position, i.position, i.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([course_id], |r| {
+            Ok(DownloadItem {
+                id: r.get(0)?,
+                remote_id: r.get(1)?,
+                kind: r.get(2)?,
+                locked: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

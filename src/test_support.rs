@@ -37,6 +37,7 @@ async fn response(request: HttpRequest) -> HttpResponse {
     }
     let a = json!({"id":"c1","slug":"rust","name":"Rust","description":"<p>Learn Rust.</p>","estimatedWorkload":"4 weeks"});
     let b = json!({"id":"c2","slug":"async-rust","name":"Async Rust","description":"Learn async Rust."});
+    let c = json!({"id":"c3","slug":"distributed-rust","name":"Distributed Rust","description":"Learn distributed Rust."});
     let data = match path {
         "/api/adminUserPermissions.v1" => {
             json!({"elements":[{"id":"42","permissions":{}}],"paging":{},"linked":{}})
@@ -48,10 +49,21 @@ async fn response(request: HttpRequest) -> HttpResponse {
             json!({"elements":[{"id":"42~s1","userId":42,"s12nId":"s1","role":"LEARNER"}]})
         }
         "/api/onDemandCourses.v1" => {
-            json!({"elements":[if request.query_string().contains("slug=async-rust") { b } else { a }]})
+            let course = if request.query_string().contains("slug=async-rust") {
+                b
+            } else if request.query_string().contains("slug=distributed-rust") {
+                c
+            } else {
+                a
+            };
+            json!({"elements":[course]})
         }
         "/api/onDemandSpecializations.v1" => {
-            json!({"elements":[{"id":"s1","slug":"systems","name":"Systems","description":"Systems programming","courseIds":["c2","c1"]}],"linked":{"courses.v1":[a,b]}})
+            if request.query_string().contains("slug=distributed-systems") {
+                json!({"elements":[{"id":"s2","slug":"distributed-systems","name":"Distributed Systems","description":"Distributed systems programming","courseIds":["c1","c3"]}],"linked":{"courses.v1":[a,c]}})
+            } else {
+                json!({"elements":[{"id":"s1","slug":"systems","name":"Systems","description":"Systems programming","courseIds":["c2","c1"]}],"linked":{"courses.v1":[a,b]}})
+            }
         }
         "/api/onDemandCourseMaterials.v2/" => json!({"elements":[{"moduleIds":["m1"]}],"linked":{
             "onDemandCourseMaterialModules.v1":[{"id":"m1","name":"Module","lessonIds":["l1"]}],

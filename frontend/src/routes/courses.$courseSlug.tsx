@@ -39,10 +39,16 @@ import type {
 } from "../gen/proto/admin_pb";
 
 export const Route = createFileRoute("/courses/$courseSlug")({
-	validateSearch: (search: Record<string, unknown>): { item?: string } => ({
+	validateSearch: (
+		search: Record<string, unknown>,
+	): { item?: string; spec?: string } => ({
 		item:
 			typeof search.item === "string" && search.item.trim().length > 0
 				? search.item.trim()
+				: undefined,
+		spec:
+			typeof search.spec === "string" && search.spec.trim().length > 0
+				? search.spec.trim()
 				: undefined,
 	}),
 	component: CourseViewerPage,
@@ -97,10 +103,21 @@ function CourseViewerPage() {
 		[data, courseSlug, course],
 	);
 
-	const specialization = useMemo(() => {
-		if (!data || !course) return undefined;
-		return data.specializations.find((s) => s.courseIds.includes(course.id));
+	const courseSpecializations = useMemo(() => {
+		if (!data || !course) return [];
+		return data.specializations.filter((s) => s.courseIds.includes(course.id));
 	}, [data, course]);
+
+	const specialization = useMemo(() => {
+		if (!courseSpecializations.length) return undefined;
+		if (search.spec) {
+			const matched = courseSpecializations.find(
+				(s) => s.slug === search.spec || String(s.id) === search.spec,
+			);
+			if (matched) return matched;
+		}
+		return courseSpecializations[0];
+	}, [courseSpecializations, search.spec]);
 
 	const siblingCourses = useMemo(() => {
 		if (!data || !specialization) return [];
@@ -156,7 +173,7 @@ function CourseViewerPage() {
 
 	const selectItem = (itemId: bigint) => {
 		void navigate({
-			search: { item: String(itemId) },
+			search: { item: String(itemId), spec: search.spec },
 		});
 	};
 
@@ -379,9 +396,26 @@ function CourseViewerPage() {
 				<div className="viewer-course-summary">
 					{specialization && (
 						<div className="viewer-spec-switcher">
-							<Text size="xs" c="dimmed" lineClamp={1} mb={6}>
-								{specialization.name.trim()}
-							</Text>
+							{courseSpecializations.length > 1 ? (
+								<div className="viewer-spec-pills" style={{ marginBottom: 6 }}>
+									{courseSpecializations.map((specItem) => (
+										<Link
+											key={String(specItem.id)}
+											to="/courses/$courseSlug"
+											params={{ courseSlug: course.slug }}
+											search={{ item: search.item, spec: specItem.slug }}
+											className={`spec-course-pill ${specItem.id === specialization.id ? "active" : ""}`}
+											title={specItem.name.trim()}
+										>
+											{specItem.name.trim()}
+										</Link>
+									))}
+								</div>
+							) : (
+								<Text size="xs" c="dimmed" lineClamp={1} mb={6}>
+									{specialization.name.trim()}
+								</Text>
+							)}
 							{siblingCourses.length > 1 && (
 								<div className="viewer-spec-pills">
 									{siblingCourses.map((sib, idx) => (
@@ -389,6 +423,7 @@ function CourseViewerPage() {
 											key={String(sib.id)}
 											to="/courses/$courseSlug"
 											params={{ courseSlug: sib.slug }}
+											search={{ spec: specialization.slug }}
 											className={`spec-course-pill ${sib.id === course.id ? "active" : ""}`}
 											title={sib.name.trim()}
 										>

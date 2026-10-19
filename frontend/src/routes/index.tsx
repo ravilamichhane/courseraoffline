@@ -240,6 +240,7 @@ function LibraryPage() {
 																component={Link}
 																to="/courses/$courseSlug"
 																params={{ courseSlug: firstCourse.slug }}
+																search={{ spec: spec.slug }}
 																size="compact-xs"
 																variant="light"
 																leftSection={
@@ -261,6 +262,7 @@ function LibraryPage() {
 																	key={String(course.id)}
 																	to="/courses/$courseSlug"
 																	params={{ courseSlug: course.slug }}
+																	search={{ spec: spec.slug }}
 																	className="library-spec-course-row"
 																>
 																	<span className="small-order">{idx + 1}</span>
@@ -358,12 +360,13 @@ function LibraryPage() {
 															(cd.downloadedItems / cd.totalItems) * 100,
 														)
 													: 0;
-											const specName = course.specializationIds
-												.map(
-													(id) =>
-														data.specializations.find((s) => s.id === id)?.name,
+											const specNames = course.specializationIds
+												.map((id) =>
+													data.specializations
+														.find((s) => s.id === id)
+														?.name?.trim(),
 												)
-												.find(Boolean);
+												.filter((n): n is string => Boolean(n));
 
 											return (
 												<Paper
@@ -394,14 +397,14 @@ function LibraryPage() {
 																<Title order={3} lineClamp={2}>
 																	{course.name.trim()}
 																</Title>
-																{specName && (
+																{specNames.length > 0 && (
 																	<Text
 																		size="xs"
 																		c="dimmed"
 																		lineClamp={1}
 																		mt={3}
 																	>
-																		{specName.trim()}
+																		{specNames.join(" · ")}
 																	</Text>
 																)}
 															</div>
