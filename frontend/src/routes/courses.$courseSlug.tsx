@@ -42,6 +42,7 @@ import type {
 	LessonDownloadStatus,
 	ModuleDownloadStatus,
 } from "../gen/proto/admin_pb";
+import { renderMath } from "../learner/math";
 import { learningProgress } from "../learner/progress";
 
 export const Route = createFileRoute("/courses/$courseSlug")({
@@ -280,7 +281,7 @@ function CourseViewerPage() {
 		};
 	}, [readingAsset?.relativePath]);
 
-	// Enhance links and handle broken images inside rendered HTML readings
+	// Enhance links, handle broken images, and render math inside HTML readings
 	useEffect(() => {
 		const container = readingRef.current;
 		if (!container || !readingHtml) return;
@@ -303,6 +304,9 @@ function CourseViewerPage() {
 		for (const img of images) {
 			img.addEventListener("error", handleImgError);
 		}
+
+		renderMath(container);
+
 		return () => {
 			for (const img of images) {
 				img.removeEventListener("error", handleImgError);

@@ -2049,6 +2049,28 @@ a.library-spec-card:hover,
 	margin: 1.5em 0;
 }
 
+.reading-prose .katex-display {
+	margin: 1.25em 0;
+	padding: 4px 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	max-width: 100%;
+}
+
+.reading-prose .katex {
+	font-size: 1.05em;
+	color: #edf0f7;
+}
+
+.reading-prose .katex-display > .katex {
+	font-size: 1.15em;
+	text-align: center;
+}
+
+.reading-prose [data-has-math="true"] {
+	overflow-x: auto;
+}
+
 @media (max-width: 1100px) {
 	.library-toolbar {
 		flex-wrap: wrap;
