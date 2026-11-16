@@ -67,6 +67,7 @@ export const adminClient = createClient(
 	AdminService,
 	createConnectTransport({
 		baseUrl: import.meta.env.VITE_RPC_BASE_URL || window.location.origin,
+		useBinaryFormat: true,
 		interceptors: [
 			(next) => async (req) => {
 				const key = getApiKey();

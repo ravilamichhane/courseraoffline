@@ -33,11 +33,25 @@ import { useMemo, useState } from "react";
 import { bytes } from "../admin/api";
 import { useAdmin } from "../admin/context";
 import { EmptyState } from "../admin/shared";
+import type { CourseDownloadStatus } from "../gen/proto/admin_pb";
 import { learningProgress } from "../learner/progress";
 
 export const Route = createFileRoute("/")({ component: LibraryPage });
 
 type ViewFilter = "all" | "specializations" | "courses" | "downloaded";
+
+function nextCourseItem(download?: CourseDownloadStatus) {
+	const items =
+		download?.modules.flatMap((mod) =>
+			mod.lessons.flatMap((lesson) => lesson.items),
+		) ?? [];
+	return (
+		items.find((item) => item.state === "downloaded" && !item.completed) ??
+		items.find((item) => !item.completed) ??
+		items.find((item) => item.state === "downloaded") ??
+		items[0]
+	);
+}
 
 function LibraryPage() {
 	const { data, loading, loadError, refresh, logout } = useAdmin();
@@ -54,7 +68,12 @@ function LibraryPage() {
 			.filter((course) => !course.archived)
 			.map((course) => {
 				const download = downloads.get(course.id);
-				return { course, download, progress: learningProgress(download) };
+				return {
+					course,
+					download,
+					progress: learningProgress(download),
+					nextItem: nextCourseItem(download),
+				};
 			});
 	}, [data]);
 	const courseMap = useMemo(
@@ -118,6 +137,18 @@ function LibraryPage() {
 			download.totalItems > 0 &&
 			download.downloadedItems === download.totalItems,
 	).length;
+	const overallProgress = useMemo(() => {
+		const total = courses.reduce((sum, entry) => sum + entry.progress.total, 0);
+		const completed = courses.reduce(
+			(sum, entry) => sum + entry.progress.completed,
+			0,
+		);
+		return {
+			total,
+			completed,
+			percent: total ? Math.round((completed / total) * 100) : 0,
+		};
+	}, [courses]);
 	const suggestedCourse =
 		courses.find(
 			({ progress, download }) =>
@@ -128,7 +159,8 @@ function LibraryPage() {
 		specializations.find(
 			({ nextCourse }) => (nextCourse?.download?.downloadedItems ?? 0) > 0,
 		)?.nextCourse ??
-		courses.find(({ download }) => (download?.downloadedItems ?? 0) > 0);
+		courses.find(({ download }) => (download?.downloadedItems ?? 0) > 0) ??
+		courses[0];
 	const showSpecializations = filter === "all" || filter === "specializations";
 	const showCourses = filter !== "specializations";
 	const resultCount =
@@ -155,6 +187,20 @@ function LibraryPage() {
 						</span>
 					</Link>
 					<Group gap="xs" wrap="nowrap">
+						{data && (
+							<span
+								className="library-header-pill"
+								title="Offline library status"
+							>
+								<CheckCircleIcon size={13} weight="fill" />
+								<span>
+									{offlineCount} offline
+									{overallProgress.total > 0
+										? ` · ${overallProgress.percent}% done`
+										: ""}
+								</span>
+							</span>
+						)}
 						<Button
 							component={Link}
 							to="/admin"
@@ -192,17 +238,38 @@ function LibraryPage() {
 					</div>
 					{data && (
 						<section className="library-stats" aria-label="Library overview">
-							<div>
+							<div className="library-stat-card">
+								<div className="library-stat-head">
+									<span className="library-stat-icon">
+										<SquaresFourIcon size={15} weight="duotone" />
+									</span>
+									<span>Specialisations</span>
+								</div>
 								<strong>{data.specializations.length}</strong>
-								<span>Specialisations</span>
 							</div>
-							<div>
+							<div className="library-stat-card">
+								<div className="library-stat-head">
+									<span className="library-stat-icon">
+										<BooksIcon size={15} weight="duotone" />
+									</span>
+									<span>Courses</span>
+								</div>
 								<strong>{courses.length}</strong>
-								<span>Courses</span>
 							</div>
-							<div>
+							<div className="library-stat-card">
+								<div className="library-stat-head">
+									<span className="library-stat-icon is-ready">
+										<CheckCircleIcon size={15} weight="duotone" />
+									</span>
+									<span>Available offline</span>
+								</div>
 								<strong>{offlineCount}</strong>
-								<span>Available offline</span>
+								{overallProgress.total > 0 && (
+									<small>
+										{overallProgress.completed}/{overallProgress.total} items
+										done
+									</small>
+								)}
 							</div>
 						</section>
 					)}
@@ -242,6 +309,11 @@ function LibraryPage() {
 							<Link
 								to="/courses/$courseSlug"
 								params={{ courseSlug: suggestedCourse.course.slug }}
+								search={{
+									item: suggestedCourse.nextItem
+										? String(suggestedCourse.nextItem.id)
+										: undefined,
+								}}
 								className="library-continue"
 							>
 								<div className="library-continue-icon" aria-hidden="true">
@@ -254,11 +326,30 @@ function LibraryPage() {
 											: "READY WHEN YOU ARE"}
 									</p>
 									<Title order={2}>{suggestedCourse.course.name.trim()}</Title>
-									<Text size="sm" c="dimmed">
-										{suggestedCourse.progress.completed > 0
-											? `${suggestedCourse.progress.completed} of ${suggestedCourse.progress.total} items completed`
+									<Text size="sm" c="dimmed" lineClamp={1}>
+										{suggestedCourse.nextItem
+											? `Up next: ${suggestedCourse.nextItem.name.trim()}`
 											: "Your next lesson is just a click away."}
 									</Text>
+									{suggestedCourse.progress.total > 0 && (
+										<div className="library-continue-progress">
+											<Progress
+												value={suggestedCourse.progress.percent}
+												size={5}
+												color={
+													suggestedCourse.progress.percent === 100
+														? "teal"
+														: "myColor"
+												}
+												aria-label={`${suggestedCourse.course.name.trim()} progress`}
+											/>
+											<span>
+												{suggestedCourse.progress.completed} of{" "}
+												{suggestedCourse.progress.total} ·{" "}
+												<strong>{suggestedCourse.progress.percent}%</strong>
+											</span>
+										</div>
+									)}
 								</div>
 								<span className="library-continue-action">
 									{suggestedCourse.progress.completed > 0
@@ -451,6 +542,24 @@ function LibraryPage() {
 																	{spec.tagline.trim() ||
 																		"Build your understanding, one course at a time."}
 																</Text>
+																{entries.length > 0 && (
+																	<div className="library-spec-courses">
+																		{entries.slice(0, 3).map((entry, idx) => (
+																			<span
+																				key={String(entry.course.id)}
+																				className="library-spec-course-pill"
+																			>
+																				<span>{idx + 1}</span>
+																				{entry.course.name.trim()}
+																			</span>
+																		))}
+																		{entries.length > 3 && (
+																			<span className="library-spec-course-more">
+																				+{entries.length - 3} more
+																			</span>
+																		)}
+																	</div>
+																)}
 															</div>
 															<div className="library-card-progress">
 																<div>
@@ -590,16 +699,22 @@ function LibraryPage() {
 																	{course.name.trim()}
 																</Title>
 															</div>
-															<Text size="sm" c="dimmed">
-																{download?.moduleCount ?? course.moduleCount}{" "}
-																modules
-																{download
-																	? ` · ${download.lessonCount} lessons`
-																	: ""}
-																{download && download.downloadedBytes > 0n
-																	? ` · ${bytes(download.downloadedBytes)}`
-																	: ""}
-															</Text>
+															<div className="library-course-meta-pills">
+																<span className="library-meta-pill">
+																	{download?.moduleCount ?? course.moduleCount}{" "}
+																	modules
+																</span>
+																{download ? (
+																	<span className="library-meta-pill">
+																		{download.lessonCount} lessons
+																	</span>
+																) : null}
+																{download && download.downloadedBytes > 0n ? (
+																	<span className="library-meta-pill">
+																		{bytes(download.downloadedBytes)}
+																	</span>
+																) : null}
+															</div>
 															<div className="library-card-progress">
 																<div>
 																	<span>

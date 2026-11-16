@@ -55,6 +55,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(state.clone())
             .app_data(auth_config.clone())
             .app_data(frontend_config.clone())
+            .wrap(middleware::Compress::default())
             .wrap(middleware::Logger::default())
             .wrap(middleware::NormalizePath::default())
             .configure(courseviewer::auth::configure)

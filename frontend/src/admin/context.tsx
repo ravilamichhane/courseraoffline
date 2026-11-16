@@ -1,7 +1,6 @@
 import {
 	Alert,
 	Button,
-	Group,
 	Paper,
 	PasswordInput,
 	Stack,
@@ -48,6 +47,17 @@ type AdminContext = {
 
 const Context = createContext<AdminContext | null>(null);
 
+function isWorkActive(d: GetDashboardResponse | null): boolean {
+	if (!d) return false;
+	const hasActiveJobs = d.downloads.some((j) =>
+		["planning", "queued", "running"].includes(j.state),
+	);
+	const hasSyncingCourses = d.courses.some(
+		(c) => c.metadataState === "syncing" || c.outlineState === "syncing",
+	);
+	return hasActiveJobs || hasSyncingCourses;
+}
+
 function AuthScreen({
 	initialError,
 	onAuthenticated,
@@ -74,7 +84,7 @@ function AuthScreen({
 		setError(null);
 		setApiKey(trimmed);
 		try {
-			const result = await adminClient.getDashboard({}, { timeoutMs: 15000 });
+			const result = await adminClient.getDashboard({}, { timeoutMs: 30000 });
 			onAuthenticated(result);
 		} catch (err) {
 			if (isUnauthenticatedError(err)) {
@@ -92,20 +102,23 @@ function AuthScreen({
 		<div className="auth-screen">
 			<Paper withBorder className="auth-card" p="xl">
 				<form onSubmit={handleSubmit}>
-					<Stack gap="md">
-						<Group gap="xs" align="center">
-							<span className="course-tile">
-								<BookOpenTextIcon size={18} weight="duotone" />
+					<Stack gap="lg">
+						<div className="auth-header">
+							<span className="library-brand-mark auth-brand-mark">
+								<BookOpenTextIcon size={22} weight="duotone" />
 							</span>
 							<div>
-								<Title order={2} size="h4">
+								<p className="learner-eyebrow auth-eyebrow">
+									PERSONAL LEARNING SPACE
+								</p>
+								<Title order={2} size="h3" className="auth-title">
 									courseviewer
 								</Title>
-								<Text size="xs" c="dimmed">
-									Enter your API key to access the library
+								<Text size="xs" c="dimmed" mt={4}>
+									Enter your API key to unlock your library
 								</Text>
 							</div>
-						</Group>
+						</div>
 
 						{error && (
 							<Alert color="red" icon={<WarningCircleIcon size={16} />} py="xs">
@@ -127,10 +140,11 @@ function AuthScreen({
 						<Button
 							type="submit"
 							fullWidth
+							size="md"
 							loading={submitting}
-							leftSection={<SignInIcon size={16} />}
+							leftSection={<SignInIcon size={17} />}
 						>
-							Unlock
+							Unlock library
 						</Button>
 					</Stack>
 				</form>
@@ -148,48 +162,143 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 	const [notice, setNotice] = useState<Notice | null>(null);
 	const sequence = useRef(0);
 
-	const refresh = useCallback(async () => {
+	const inFlightPromiseRef =
+		useRef<Promise<GetDashboardResponse | null> | null>(null);
+	const pollTimerRef = useRef<number | null>(null);
+	const dataRef = useRef<GetDashboardResponse | null>(data);
+	dataRef.current = data;
+	const authRequiredRef = useRef(authRequired);
+	authRequiredRef.current = authRequired;
+	const lastFetchedRef = useRef(0);
+	const hasInitialDataRef = useRef(false);
+	const mountedRef = useRef(true);
+
+	const refresh = useCallback(async (): Promise<void> => {
 		if (!getApiKey()) {
 			setAuthRequired(true);
 			setLoading(false);
 			return;
 		}
-		const request = ++sequence.current;
-		try {
-			const result = await adminClient.getDashboard({}, { timeoutMs: 15000 });
-			if (request === sequence.current) {
-				setData(result);
-				setLoadError(null);
-				setAuthRequired(false);
-				setAuthError(null);
-			}
-		} catch (error) {
-			if (request === sequence.current) {
-				if (isUnauthenticatedError(error)) {
-					clearApiKey();
-					setData(null);
-					setAuthRequired(true);
-					setAuthError("Invalid or expired API key.");
-				} else {
-					setLoadError(errorMessage(error));
-				}
-			}
-		} finally {
-			if (request === sequence.current) setLoading(false);
+
+		// Deduplicate: if a request is already running, wait for it instead of spawning duplicate calls
+		if (inFlightPromiseRef.current) {
+			await inFlightPromiseRef.current;
+			return;
 		}
+
+		const request = ++sequence.current;
+		const fetchPromise = (async () => {
+			try {
+				const result = await adminClient.getDashboard({}, { timeoutMs: 30000 });
+				if (request === sequence.current && mountedRef.current) {
+					setData(result);
+					setLoadError(null);
+					setAuthRequired(false);
+					setAuthError(null);
+					lastFetchedRef.current = Date.now();
+				}
+				return result;
+			} catch (error) {
+				if (request === sequence.current && mountedRef.current) {
+					if (isUnauthenticatedError(error)) {
+						clearApiKey();
+						setData(null);
+						setAuthRequired(true);
+						setAuthError("Invalid or expired API key.");
+					} else {
+						setLoadError(errorMessage(error));
+					}
+				}
+				return null;
+			} finally {
+				if (request === sequence.current && mountedRef.current) {
+					setLoading(false);
+				}
+				inFlightPromiseRef.current = null;
+			}
+		})();
+
+		inFlightPromiseRef.current = fetchPromise;
+		await fetchPromise;
 	}, []);
 
+	const scheduleNextPoll = useCallback(
+		(delayMs: number) => {
+			if (pollTimerRef.current) {
+				window.clearTimeout(pollTimerRef.current);
+				pollTimerRef.current = null;
+			}
+			if (!mountedRef.current || authRequiredRef.current || document.hidden) {
+				return;
+			}
+			pollTimerRef.current = window.setTimeout(async () => {
+				pollTimerRef.current = null;
+				if (!mountedRef.current || authRequiredRef.current || document.hidden) {
+					return;
+				}
+				await refresh();
+				if (
+					mountedRef.current &&
+					!authRequiredRef.current &&
+					!document.hidden
+				) {
+					const nextDelay = isWorkActive(dataRef.current) ? 4000 : 30000;
+					scheduleNextPoll(nextDelay);
+				}
+			}, delayMs);
+		},
+		[refresh],
+	);
+
 	useEffect(() => {
+		mountedRef.current = true;
 		if (authRequired) return;
-		void refresh();
-		const timer = window.setInterval(() => {
-			if (!document.hidden && !authRequired) void refresh();
-		}, 10000);
+
+		if (hasInitialDataRef.current) {
+			hasInitialDataRef.current = false;
+			const delay = isWorkActive(dataRef.current) ? 4000 : 30000;
+			scheduleNextPoll(delay);
+		} else {
+			void refresh().then(() => {
+				const delay = isWorkActive(dataRef.current) ? 4000 : 30000;
+				scheduleNextPoll(delay);
+			});
+		}
+
+		const handleVisibilityChange = () => {
+			if (document.hidden) {
+				if (pollTimerRef.current) {
+					window.clearTimeout(pollTimerRef.current);
+					pollTimerRef.current = null;
+				}
+			} else {
+				if (!authRequiredRef.current) {
+					const isStale = Date.now() - lastFetchedRef.current > 10000;
+					if (isStale) {
+						void refresh().then(() => {
+							const delay = isWorkActive(dataRef.current) ? 4000 : 30000;
+							scheduleNextPoll(delay);
+						});
+					} else {
+						const delay = isWorkActive(dataRef.current) ? 4000 : 30000;
+						scheduleNextPoll(delay);
+					}
+				}
+			}
+		};
+
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+
 		return () => {
-			clearInterval(timer);
+			mountedRef.current = false;
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+			if (pollTimerRef.current) {
+				window.clearTimeout(pollTimerRef.current);
+				pollTimerRef.current = null;
+			}
 			++sequence.current;
 		};
-	}, [refresh, authRequired]);
+	}, [authRequired, refresh, scheduleNextPoll]);
 
 	useEffect(() => {
 		if (!notice) return;
@@ -205,6 +314,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 			await action();
 			setNotice({ message, error: false });
 			await refresh();
+			scheduleNextPoll(isWorkActive(dataRef.current) ? 4000 : 30000);
 			return true;
 		} catch (error) {
 			if (isUnauthenticatedError(error)) {
@@ -221,6 +331,11 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 
 	const logout = useCallback(() => {
 		++sequence.current;
+		if (pollTimerRef.current) {
+			window.clearTimeout(pollTimerRef.current);
+			pollTimerRef.current = null;
+		}
+		inFlightPromiseRef.current = null;
 		clearApiKey();
 		setData(null);
 		setLoadError(null);
@@ -235,10 +350,19 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 				initialError={authError}
 				onAuthenticated={(result) => {
 					setData(result);
+					hasInitialDataRef.current = true;
+					lastFetchedRef.current = Date.now();
 					setLoadError(null);
 					setAuthError(null);
 					setAuthRequired(false);
 					setLoading(false);
+					if (
+						typeof window !== "undefined" &&
+						window.location.pathname !== "/"
+					) {
+						window.history.replaceState(null, "", "/");
+						window.dispatchEvent(new PopStateEvent("popstate"));
+					}
 				}}
 			/>
 		);

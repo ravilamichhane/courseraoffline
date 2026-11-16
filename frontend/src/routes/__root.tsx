@@ -6,7 +6,8 @@ import {
 	type MantineColorsTuple,
 	MantineProvider,
 } from "@mantine/core";
-import { createRootRoute, Outlet } from "@tanstack/react-router";
+import { createRootRoute, Outlet, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { AdminProvider } from "../admin/context";
 
 const myColor: MantineColorsTuple = [
@@ -39,6 +40,25 @@ const theme = createTheme({
 
 export const Route = createRootRoute({ component: RootComponent });
 function RootComponent() {
+	const navigate = useNavigate();
+
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		try {
+			const started = window.sessionStorage.getItem(
+				"courseviewer_session_started",
+			);
+			if (!started) {
+				window.sessionStorage.setItem("courseviewer_session_started", "1");
+				if (window.location.pathname !== "/") {
+					void navigate({ to: "/", replace: true });
+				}
+			}
+		} catch {
+			// Ignore sessionStorage errors in restricted environments
+		}
+	}, [navigate]);
+
 	return (
 		<MantineProvider forceColorScheme="dark" theme={theme}>
 			<AdminProvider>
